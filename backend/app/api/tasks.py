@@ -135,6 +135,20 @@ def get_task_status(
         raise HTTPException(status_code=500, detail=f"Failed to get task status: {str(e)}")
 
 
+def get_recent_task_ids_from_redis(limit: int = 100) -> List[str]:
+    """Redisから最近のタスクIDを取得"""
+    try:
+        import redis
+        r = redis.Redis(host='redis', port=6379, db=1, decode_responses=True)
+        
+        # タスク履歴リストから最新のタスクIDを取得
+        task_ids = r.lrange('celery:task_history', 0, limit - 1)
+        return task_ids
+    except Exception as e:
+        logger.error(f"Redis からタスク履歴取得エラー: {e}")
+        return []
+
+
 @router.get("", response_model=TaskListResponse)
 def list_tasks(
     *,
@@ -144,8 +158,9 @@ def list_tasks(
     task_name: Optional[str] = Query(None, description="フィルタ: タスク名"),
     page: int = Query(1, ge=1, description="ページ番号"),
     per_page: int = Query(50, ge=1, le=100, description="1ページあたりの件数"),
+    include_completed: bool = Query(True, description="完了したタスクも含める"),
 ) -> Any:
-    """アクティブなタスク一覧を取得"""
+    """タスク一覧を取得（アクティブ + 最近完了したタスク）"""
     try:
         # Celeryのインスペクション機能を使用してアクティブなタスクを取得
         inspect = celery_app.control.inspect()
@@ -156,32 +171,62 @@ def list_tasks(
         scheduled_tasks = inspect.scheduled() or {}
         
         all_tasks = []
+        processed_task_ids = set()
         
-        # 各ワーカーからタスクを収集
+        # 各ワーカーからアクティブタスクを収集
         for worker_name, tasks in active_tasks.items():
             for task_data in tasks:
                 task_id = task_data.get('id', 'unknown')
-                result = AsyncResult(task_id, app=celery_app)
-                task_info = get_task_info_from_result(task_id, result)
-                task_info.worker = worker_name
-                all_tasks.append(task_info)
+                if task_id not in processed_task_ids:
+                    result = AsyncResult(task_id, app=celery_app)
+                    task_info = get_task_info_from_result(task_id, result)
+                    task_info.worker = worker_name
+                    all_tasks.append(task_info)
+                    processed_task_ids.add(task_id)
         
+        # 予約済みタスクを収集
         for worker_name, tasks in reserved_tasks.items():
             for task_data in tasks:
                 task_id = task_data.get('id', 'unknown')
-                result = AsyncResult(task_id, app=celery_app)
-                task_info = get_task_info_from_result(task_id, result)
-                task_info.worker = worker_name
-                all_tasks.append(task_info)
+                if task_id not in processed_task_ids:
+                    result = AsyncResult(task_id, app=celery_app)
+                    task_info = get_task_info_from_result(task_id, result)
+                    task_info.worker = worker_name
+                    all_tasks.append(task_info)
+                    processed_task_ids.add(task_id)
                 
+        # スケジュール済みタスクを収集
         for worker_name, tasks in scheduled_tasks.items():
             for task_data in tasks:
                 task_id = task_data.get('id', 'unknown')
-                result = AsyncResult(task_id, app=celery_app)
-                task_info = get_task_info_from_result(task_id, result)
-                task_info.worker = worker_name
-                task_info.eta = datetime.fromtimestamp(task_data.get('eta', 0), tz=timezone.utc)
-                all_tasks.append(task_info)
+                if task_id not in processed_task_ids:
+                    result = AsyncResult(task_id, app=celery_app)
+                    task_info = get_task_info_from_result(task_id, result)
+                    task_info.worker = worker_name
+                    task_info.eta = datetime.fromtimestamp(task_data.get('eta', 0), tz=timezone.utc)
+                    all_tasks.append(task_info)
+                    processed_task_ids.add(task_id)
+        
+        # 完了したタスクも含める場合
+        if include_completed:
+            # Redisから最近のタスクIDを取得
+            recent_task_ids = get_recent_task_ids_from_redis(100)
+            
+            for task_id in recent_task_ids:
+                if task_id not in processed_task_ids:
+                    try:
+                        result = AsyncResult(task_id, app=celery_app)
+                        # タスクの結果が存在する場合のみ追加
+                        if result.state in ['SUCCESS', 'FAILURE', 'REVOKED']:
+                            task_info = get_task_info_from_result(task_id, result)
+                            all_tasks.append(task_info)
+                            processed_task_ids.add(task_id)
+                    except Exception as e:
+                        logger.debug(f"タスク {task_id} の詳細取得エラー: {e}")
+                        continue
+        
+        # タスクを日時でソート（新しい順）
+        all_tasks.sort(key=lambda x: x.date_created or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
         
         # フィルタリング
         filtered_tasks = all_tasks
@@ -289,8 +334,16 @@ def get_task_metrics(
         # ワーカー統計から情報を取得
         total_processed = 0
         for worker_stats in stats.values():
-            if 'total' in worker_stats:
-                total_processed += worker_stats['total']
+            if isinstance(worker_stats, dict) and 'total' in worker_stats:
+                # 'total'の値が辞書の場合は、その中から数値を取得
+                total_value = worker_stats['total']
+                if isinstance(total_value, (int, float)):
+                    total_processed += total_value
+                elif isinstance(total_value, dict):
+                    # 'total'が辞書の場合、その値を合計
+                    for key, value in total_value.items():
+                        if isinstance(value, (int, float)):
+                            total_processed += value
         
         return TaskMetrics(
             total_tasks=total_processed,

@@ -59,7 +59,7 @@ export function TasksPage({}: TasksPageProps) {
 
       const response = await fetch(`/api/tasks?${params}`, {
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+          'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
           'Content-Type': 'application/json',
         },
       })
@@ -101,7 +101,7 @@ export function TasksPage({}: TasksPageProps) {
     try {
       const response = await fetch('/api/tasks/metrics', {
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+          'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
           'Content-Type': 'application/json',
         },
       })
