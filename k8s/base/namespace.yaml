@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: auto-inquiry-form
+  labels:
+    app: auto-inquiry-form
+    environment: base

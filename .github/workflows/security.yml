@@ -1,0 +1,101 @@
+name: Security Scans
+
+on:
+  schedule:
+    - cron: '0 2 * * *'  # Daily at 2 AM UTC
+  workflow_dispatch:
+
+jobs:
+  dependency-check:
+    name: Check Dependencies
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Python Dependency Check
+      uses: pyupio/safety@v1
+      with:
+        api-key: ${{ secrets.SAFETY_API_KEY }}
+        scan: 'full'
+        path: './backend'
+    
+    - name: Node Dependency Check
+      run: |
+        cd frontend
+        npm audit --production
+    
+    - name: Create issue for vulnerabilities
+      if: failure()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const issue = await github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: 'Security: Dependency vulnerabilities detected',
+            body: 'Automated security scan found vulnerabilities. Please check the workflow run for details.',
+            labels: ['security', 'dependencies']
+          });
+
+  container-scan:
+    name: Container Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Run Trivy scanner on backend
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: './backend'
+        severity: 'CRITICAL,HIGH'
+        format: 'sarif'
+        output: 'backend-trivy.sarif'
+    
+    - name: Run Trivy scanner on frontend
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: './frontend'
+        severity: 'CRITICAL,HIGH'
+        format: 'sarif'
+        output: 'frontend-trivy.sarif'
+    
+    - name: Upload scan results
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: '*.sarif'
+
+  sast-scan:
+    name: Static Application Security Testing
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: python, javascript
+    
+    - name: Autobuild
+      uses: github/codeql-action/autobuild@v3
+    
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+
+  secret-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Detect secrets with Gitleaks
+      uses: gitleaks/gitleaks-action@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

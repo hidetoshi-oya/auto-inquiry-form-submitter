@@ -1,0 +1,44 @@
+{
+  "hooks": {
+    "pre-command": ".kiro/hooks/pre-command.sh",
+    "post-command": ".kiro/hooks/post-command.sh",
+    "memory-compact": ".kiro/hooks/preserve-context.sh"
+  },
+  "custom-commands": {
+    "kiro:steering": {
+      "description": "Create or update project steering documents",
+      "script": ".kiro/commands/kiro:steering.md"
+    },
+    "kiro:steering-custom": {
+      "description": "Create custom steering for specialized contexts",
+      "script": ".kiro/commands/kiro:steering-custom.md"
+    },
+    "kiro:spec-init": {
+      "description": "Initialize a new feature specification",
+      "script": ".kiro/commands/kiro:spec-init.md"
+    },
+    "kiro:spec-requirements": {
+      "description": "Generate requirements document",
+      "script": ".kiro/commands/kiro:spec-requirements.md"
+    },
+    "kiro:spec-design": {
+      "description": "Generate technical design document",
+      "script": ".kiro/commands/kiro:spec-design.md"
+    },
+    "kiro:spec-tasks": {
+      "description": "Generate implementation tasks",
+      "script": ".kiro/commands/kiro:spec-tasks.md"
+    },
+    "kiro:spec-status": {
+      "description": "Check specification status and progress",
+      "script": ".kiro/commands/kiro:spec-status.md"
+    }
+  },
+  "context": {
+    "always-include": [
+      ".kiro/steering/product.md",
+      ".kiro/steering/tech.md",
+      ".kiro/steering/structure.md"
+    ]
+  }
+}

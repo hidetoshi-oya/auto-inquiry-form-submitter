@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: auto-inquiry-form
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - secret.yaml
+  - postgres-deployment.yaml
+  - redis-deployment.yaml
+  - minio-deployment.yaml
+  - backend-deployment.yaml
+  - frontend-deployment.yaml
+  - celery-deployment.yaml
+  - ingress.yaml
+
+commonLabels:
+  app.kubernetes.io/name: auto-inquiry-form
+  app.kubernetes.io/part-of: auto-inquiry-form

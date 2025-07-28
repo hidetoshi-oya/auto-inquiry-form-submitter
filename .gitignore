@@ -1,0 +1,81 @@
+# Backend
+backend/__pycache__/
+backend/*.pyc
+backend/*.pyo
+backend/*.pyd
+backend/.Python
+backend/env/
+backend/venv/
+backend/.venv/
+backend/pip-log.txt
+backend/pip-delete-this-directory.txt
+backend/.coverage
+backend/.pytest_cache/
+backend/htmlcov/
+backend/dist/
+backend/build/
+backend/eggs/
+backend/.eggs/
+backend/*.egg-info/
+backend/*.egg
+backend/.mypy_cache/
+backend/.ruff_cache/
+backend/.env
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.env
+frontend/.env.local
+frontend/.env.production.local
+frontend/.env.development.local
+frontend/.env.test.local
+frontend/npm-debug.log*
+frontend/yarn-debug.log*
+frontend/yarn-error.log*
+frontend/.pnpm-debug.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Docker
+.docker/
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+.cache/
+
+# OS
+Thumbs.db
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Playwright
+test-results/
+playwright-report/
+playwright/.cache/
+
+# Claude Code specific
+.claude/
+*.claude-session
+
+# Local configuration overrides
+.env.local
+.env.*.local
+
+# Kiro-specific (optional excludes)
+# Uncomment if you want to exclude work-in-progress specs
+# .kiro/specs/*/work-in-progress/

@@ -1,0 +1,61 @@
+version: '3.8'
+
+services:
+  test-db:
+    image: postgres:15-alpine
+    restart: "no"
+    environment:
+      POSTGRES_USER: test_user
+      POSTGRES_PASSWORD: test_password
+      POSTGRES_DB: test_auto_inquiry_db
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+    ports:
+      - "5434:5432"
+    tmpfs:
+      - /var/lib/postgresql/data:noexec,nosuid,size=1g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test_user -d test_auto_inquiry_db"]
+      interval: 2s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    command: >
+      postgres
+      -c shared_preload_libraries=''
+      -c max_connections=50
+      -c shared_buffers=128MB
+      -c effective_cache_size=256MB
+      -c maintenance_work_mem=64MB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=16MB
+      -c default_statistics_target=100
+      -c random_page_cost=1.1
+      -c effective_io_concurrency=200
+      -c work_mem=4MB
+      -c min_wal_size=1GB
+      -c max_wal_size=4GB
+
+  test-redis:
+    image: redis:7-alpine
+    restart: "no"
+    ports:
+      - "6380:6379"
+    tmpfs:
+      - /data:noexec,nosuid,size=512m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+      --maxmemory 256mb
+      --maxmemory-policy allkeys-lru
+
+networks:
+  default:
+    name: test-network
+    driver: bridge 

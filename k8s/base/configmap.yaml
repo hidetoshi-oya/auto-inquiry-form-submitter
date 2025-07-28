@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: auto-inquiry-form
+data:
+  ENVIRONMENT: "production"
+  LOG_LEVEL: "INFO"
+  REDIS_URL: "redis://redis-service:6379/0"
+  MINIO_ENDPOINT: "minio-service:9000"
+  BROWSER_POOL_SIZE: "10"
+  MAX_PAGES_PER_BROWSER: "5"
+  BROWSER_TIMEOUT: "60000"
+  RATE_LIMIT_PER_MINUTE: "60"
+  SUBMISSION_INTERVAL_SECONDS: "10"
+  PROMETHEUS_ENABLED: "true"
+  PROMETHEUS_PORT: "9090"

@@ -1,0 +1,28 @@
+{
+  "feature_name": "auto-inquiry-form-submitter",
+  "project_description": "指定した企業のHPから問い合わせフォームのページを探し、自動でフォーム送信するサービス",
+  "created_at": "2025-01-25T10:44:00Z",
+  "updated_at": "2025-01-25T10:56:00Z",
+  "language": "japanese",
+  "phase": "ready-for-implementation",
+  "approvals": {
+    "requirements": {
+      "generated": true,
+      "approved": true
+    },
+    "design": {
+      "generated": true,
+      "approved": true
+    },
+    "tasks": {
+      "generated": true,
+      "approved": true
+    }
+  },
+  "progress": {
+    "requirements": 100,
+    "design": 100,
+    "tasks": 100
+  },
+  "ready_for_implementation": true
+}
