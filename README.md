@@ -1,5 +1,8 @@
 # Auto Inquiry Form Submitter
 
+![Status](https://img.shields.io/badge/status-完了-green)
+![Last Updated](https://img.shields.io/badge/last%20updated-2025--07--28-blue)
+
 企業のウェブサイトから問い合わせフォームを自動的に検出し、必要な情報を入力して送信することで、複数企業への問い合わせ業務を効率化するWebサービス。
 
 ## 技術スタック

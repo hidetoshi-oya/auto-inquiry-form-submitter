@@ -73,8 +73,12 @@ playwright/.cache/
 *.claude-session
 
 # Local configuration overrides
+.env
 .env.local
 .env.*.local
+
+# Celery
+backend/celerybeat-schedule
 
 # Kiro-specific (optional excludes)
 # Uncomment if you want to exclude work-in-progress specs

@@ -2,7 +2,7 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 from pydantic import BaseModel, HttpUrl, Field, validator
 
-from app.models.company import CompanyStatus
+from app.models.company import CompanyStatus, FormDetectionStatus
 
 
 class CompanyBase(BaseModel):
@@ -26,6 +26,8 @@ class CompanyUpdate(BaseModel):
     status: Optional[CompanyStatus] = None
     meta_data: Optional[Dict[str, Any]] = None
     memo: Optional[str] = Field(None, max_length=1000)
+    form_detection_status: Optional[FormDetectionStatus] = Field(None, description="フォーム検出ステータス")
+    form_detection_error_message: Optional[str] = Field(None, description="フォーム検出エラーメッセージ")
 
 
 class CompanyResponse(CompanyBase):
@@ -34,6 +36,12 @@ class CompanyResponse(CompanyBase):
     last_submitted_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    
+    # フォーム検出関連フィールド
+    form_detection_status: FormDetectionStatus = Field(description="フォーム検出ステータス")
+    form_detection_completed_at: Optional[datetime] = Field(None, description="フォーム検出完了日時")
+    detected_forms_count: int = Field(description="検出されたフォーム数")
+    form_detection_error_message: Optional[str] = Field(None, description="フォーム検出エラーメッセージ")
     
     class Config:
         from_attributes = True
