@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.services.browser_pool import browser_pool
 from app.models.form import Form, FormField
-from app.models.company import Company
+from app.models.company import Company, FormDetectionStatus
 from app.schemas.form import FormFieldType
 from app.core.compliance import get_compliance_manager, ComplianceCheck
 
@@ -51,22 +51,47 @@ class FormDetector:
         self.browser_pool = browser_pool_instance if browser_pool_instance is not None else browser_pool
         self.compliance_manager = get_compliance_manager()
     
-    async def detect_forms(self, url: str) -> List[Dict]:
-        """企業URLからフォームを検出"""
-        # コンプライアンスチェック
-        compliance_check = await self.compliance_manager.check_compliance(url)
+    async def detect_forms(self, url: str, company_id: int, db: Session) -> List[Dict]:
+        """企業URLからフォームを検出してデータベースに保存"""
+        # 企業のフォーム検出ステータスを"進行中"に更新
+        company = db.query(Company).filter(Company.id == company_id).first()
+        if not company:
+            raise Exception(f"企業が見つかりません: ID={company_id}")
         
-        if not compliance_check.allowed:
-            raise Exception(f"コンプライアンス違反: {', '.join(compliance_check.errors)}")
+        company.form_detection_status = FormDetectionStatus.IN_PROGRESS
+        company.form_detection_error_message = None  # エラーメッセージをクリア
+        db.commit()
         
-        # 警告がある場合はログに記録
-        if compliance_check.warnings:
-            logger.warning(f"コンプライアンス警告 for {url}: {', '.join(compliance_check.warnings)}")
+        logger.info(f"フォーム検出開始: 企業ID={company_id}, URL={url}")
         
-        # 推奨遅延を適用
-        if compliance_check.delay_seconds > 0:
-            logger.info(f"推奨遅延 {compliance_check.delay_seconds}秒を適用: {url}")
-            await asyncio.sleep(compliance_check.delay_seconds)
+        try:
+            # コンプライアンスチェック
+            compliance_check = await self.compliance_manager.check_compliance(url)
+            
+            if not compliance_check.allowed:
+                error_msg = f"コンプライアンス違反: {', '.join(compliance_check.errors)}"
+                # エラーステータスに更新
+                company.form_detection_status = FormDetectionStatus.ERROR
+                company.form_detection_error_message = error_msg
+                db.commit()
+                raise Exception(error_msg)
+            
+            # 警告がある場合はログに記録
+            if compliance_check.warnings:
+                logger.warning(f"コンプライアンス警告 for {url}: {', '.join(compliance_check.warnings)}")
+            
+            # 推奨遅延を適用
+            if compliance_check.delay_seconds > 0:
+                logger.info(f"推奨遅延 {compliance_check.delay_seconds}秒を適用: {url}")
+                await asyncio.sleep(compliance_check.delay_seconds)
+        
+        except Exception as e:
+            logger.error(f"コンプライアンスチェックエラー {url}: {e}")
+            # エラーステータスに更新
+            company.form_detection_status = FormDetectionStatus.ERROR
+            company.form_detection_error_message = str(e)
+            db.commit()
+            raise
         
         try:
             async with self.browser_pool.get_page() as page:
@@ -100,9 +125,13 @@ class FormDetector:
                         # フォーム詳細を取得
                         form_details = await self._analyze_form_page(page, link['url'])
                         if form_details:
+                            # フォームをデータベースに保存
+                            saved_form = self._save_form_to_db(db, company_id, form_details)
+                            
                             forms.append({
                                 **link,
                                 **form_details,
+                                'id': saved_form['id'],
                                 'compliance_warnings': link_compliance.warnings,
                                 'compliance_delay': link_compliance.delay_seconds
                             })
@@ -116,10 +145,23 @@ class FormDetector:
                         self.compliance_manager.record_request_result(link['url'], False)
                         continue
                 
+                # フォーム検出完了時にステータスを更新
+                company.form_detection_status = FormDetectionStatus.COMPLETED
+                company.form_detection_completed_at = datetime.now(timezone.utc)
+                company.detected_forms_count = len(forms)
+                company.form_detection_error_message = None
+                db.commit()
+                
+                logger.info(f"フォーム検出完了: 企業ID={company_id}, {len(forms)}個のフォームをデータベースに保存")
                 return forms
                 
         except Exception as e:
             logger.error(f"フォーム検出エラー {url}: {e}")
+            # エラーステータスに更新
+            company.form_detection_status = FormDetectionStatus.ERROR
+            company.form_detection_error_message = str(e)
+            db.commit()
+            
             # 失敗を記録
             self.compliance_manager.record_request_result(url, False)
             raise
@@ -507,7 +549,7 @@ class FormDetector:
             logger.error(f"reCAPTCHA検出エラー: {e}")
             return False
     
-    async def _save_form_to_db(self, db: Session, company_id: int, form_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _save_form_to_db(self, db: Session, company_id: int, form_data: Dict[str, Any]) -> Dict[str, Any]:
         """フォームデータをデータベースに保存"""
         try:
             # フォームレコードを作成
