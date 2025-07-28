@@ -1,6 +1,7 @@
 from typing import Any, List
+import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.orm import Session
 
 from app.api import deps
@@ -8,8 +9,10 @@ from app.core.database import get_db
 from app.models.company import Company
 from app.models.user import User
 from app.schemas.company import Company as CompanySchema, CompanyCreate, CompanyUpdate
+from app.services.form_detector import form_detector
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.get("/", response_model=List[CompanySchema])
@@ -107,3 +110,43 @@ def delete_company(
     db.delete(company)
     db.commit()
     return company
+
+
+@router.post("/{company_id}/detect-forms")
+async def start_form_detection(
+    *,
+    db: Session = Depends(get_db),
+    company_id: int,
+    background_tasks: BackgroundTasks,
+    # current_user: User = Depends(deps.get_current_active_user),  # 一時的に認証無効化
+) -> Any:
+    """企業のフォーム検出を開始"""
+    company = db.query(Company).filter(Company.id == company_id).first()
+    if not company:
+        raise HTTPException(status_code=404, detail="Company not found")
+    
+    # バックグラウンドタスクでフォーム検出を実行
+    background_tasks.add_task(
+        _run_form_detection_task, 
+        company.url, 
+        company_id
+    )
+    
+    return {
+        "message": "フォーム検出を開始しました",
+        "company_id": company_id,
+        "company_name": company.name
+    }
+
+
+async def _run_form_detection_task(url: str, company_id: int):
+    """バックグラウンドでフォーム検出を実行するヘルパー関数"""
+    from app.core.database import SessionLocal
+    
+    db = SessionLocal()
+    try:
+        await form_detector.detect_forms(url, company_id, db)
+    except Exception as e:
+        logger.error(f"バックグラウンドフォーム検出エラー: {e}")
+    finally:
+        db.close()

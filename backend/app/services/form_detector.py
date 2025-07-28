@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.services.browser_pool import browser_pool
 from app.models.form import Form, FormField
-from app.models.company import Company
+from app.models.company import Company, FormDetectionStatus
 from app.schemas.form import FormFieldType
 from app.core.compliance import get_compliance_manager, ComplianceCheck
 
@@ -46,89 +46,127 @@ class FormDetector:
         ],
     }
     
-    def __init__(self, browser_pool):
-        self.browser_pool = browser_pool
+    def __init__(self, browser_pool_instance=None):
+        # テスト時など引数が渡されない場合はグローバルbrowser_poolを使用
+        self.browser_pool = browser_pool_instance if browser_pool_instance is not None else browser_pool
         self.compliance_manager = get_compliance_manager()
     
-    async def detect_forms(self, url: str) -> List[Dict]:
-        """企業URLからフォームを検出"""
-        # コンプライアンスチェック
-        compliance_check = await self.compliance_manager.check_compliance(url)
+    async def detect_forms(self, url: str, company_id: int, db: Session) -> List[Dict]:
+        """企業URLからフォームを検出してデータベースに保存"""
+        # 企業のフォーム検出ステータスを"進行中"に更新
+        company = db.query(Company).filter(Company.id == company_id).first()
+        if not company:
+            raise Exception(f"企業が見つかりません: ID={company_id}")
         
-        if not compliance_check.allowed:
-            raise Exception(f"コンプライアンス違反: {', '.join(compliance_check.errors)}")
+        company.form_detection_status = FormDetectionStatus.IN_PROGRESS
+        company.form_detection_error_message = None  # エラーメッセージをクリア
+        db.commit()
         
-        # 警告がある場合はログに記録
-        if compliance_check.warnings:
-            logger.warning(f"コンプライアンス警告 for {url}: {', '.join(compliance_check.warnings)}")
+        logger.info(f"フォーム検出開始: 企業ID={company_id}, URL={url}")
         
-        # 推奨遅延を適用
-        if compliance_check.delay_seconds > 0:
-            logger.info(f"推奨遅延 {compliance_check.delay_seconds}秒を適用: {url}")
-            await asyncio.sleep(compliance_check.delay_seconds)
-        
-        page = None
         try:
-            page = await self.browser_pool.get_page()
+            # コンプライアンスチェック
+            compliance_check = await self.compliance_manager.check_compliance(url)
             
-            # 推奨ヘッダーを設定
-            recommended_headers = self.compliance_manager.get_recommended_headers(url)
-            await page.set_extra_http_headers(recommended_headers)
+            if not compliance_check.allowed:
+                error_msg = f"コンプライアンス違反: {', '.join(compliance_check.errors)}"
+                # エラーステータスに更新
+                company.form_detection_status = FormDetectionStatus.ERROR
+                company.form_detection_error_message = error_msg
+                db.commit()
+                raise Exception(error_msg)
             
-            # ページにアクセス
-            logger.info(f"アクセス開始: {url}")
-            await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            # 警告がある場合はログに記録
+            if compliance_check.warnings:
+                logger.warning(f"コンプライアンス警告 for {url}: {', '.join(compliance_check.warnings)}")
             
-            # 成功を記録
-            self.compliance_manager.record_request_result(url, True)
-            
-            # 問い合わせリンクを検索
-            contact_links = await self._find_contact_links(page, url)
-            
-            forms = []
-            for link in contact_links:
-                try:
-                    # 各リンクに対してもコンプライアンスチェック
-                    link_compliance = await self.compliance_manager.check_compliance(link['url'])
-                    
-                    if not link_compliance.allowed:
-                        logger.warning(f"フォームページがコンプライアンス違反: {link['url']}")
+            # 推奨遅延を適用
+            if compliance_check.delay_seconds > 0:
+                logger.info(f"推奨遅延 {compliance_check.delay_seconds}秒を適用: {url}")
+                await asyncio.sleep(compliance_check.delay_seconds)
+        
+        except Exception as e:
+            logger.error(f"コンプライアンスチェックエラー {url}: {e}")
+            # エラーステータスに更新
+            company.form_detection_status = FormDetectionStatus.ERROR
+            company.form_detection_error_message = str(e)
+            db.commit()
+            raise
+        
+        try:
+            async with self.browser_pool.get_page() as page:
+                # 推奨ヘッダーを設定
+                recommended_headers = self.compliance_manager.get_recommended_headers(url)
+                await page.set_extra_http_headers(recommended_headers)
+                
+                # ページにアクセス
+                logger.info(f"アクセス開始: {url}")
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                
+                # 成功を記録
+                self.compliance_manager.record_request_result(url, True)
+                
+                # 問い合わせリンクを検索
+                contact_links = await self._find_contact_links(page, url)
+                
+                forms = []
+                for link in contact_links:
+                    try:
+                        # 各リンクに対してもコンプライアンスチェック
+                        link_compliance = await self.compliance_manager.check_compliance(link['url'])
+                        
+                        if not link_compliance.allowed:
+                            logger.warning(f"フォームページがコンプライアンス違反: {link['url']}")
+                            continue
+                        
+                        if link_compliance.delay_seconds > 0:
+                            await asyncio.sleep(link_compliance.delay_seconds)
+                        
+                        # フォーム詳細を取得
+                        form_details = await self._analyze_form_page(page, link['url'])
+                        if form_details:
+                            # フォームをデータベースに保存
+                            saved_form = self._save_form_to_db(db, company_id, form_details)
+                            
+                            forms.append({
+                                **link,
+                                **form_details,
+                                'id': saved_form['id'],
+                                'compliance_warnings': link_compliance.warnings,
+                                'compliance_delay': link_compliance.delay_seconds
+                            })
+                            
+                            # 成功を記録
+                            self.compliance_manager.record_request_result(link['url'], True)
+                            
+                    except Exception as e:
+                        logger.error(f"フォーム解析エラー {link['url']}: {e}")
+                        # 失敗を記録
+                        self.compliance_manager.record_request_result(link['url'], False)
                         continue
-                    
-                    if link_compliance.delay_seconds > 0:
-                        await asyncio.sleep(link_compliance.delay_seconds)
-                    
-                    # フォーム詳細を取得
-                    form_details = await self._analyze_form_page(page, link['url'])
-                    if form_details:
-                        forms.append({
-                            **link,
-                            **form_details,
-                            'compliance_warnings': link_compliance.warnings,
-                            'compliance_delay': link_compliance.delay_seconds
-                        })
-                        
-                        # 成功を記録
-                        self.compliance_manager.record_request_result(link['url'], True)
-                        
-                except Exception as e:
-                    logger.error(f"フォーム解析エラー {link['url']}: {e}")
-                    # 失敗を記録
-                    self.compliance_manager.record_request_result(link['url'], False)
-                    continue
-            
-            return forms
-            
+                
+                # フォーム検出完了時にステータスを更新
+                company.form_detection_status = FormDetectionStatus.COMPLETED
+                company.form_detection_completed_at = datetime.now(timezone.utc)
+                company.detected_forms_count = len(forms)
+                company.form_detection_error_message = None
+                db.commit()
+                
+                logger.info(f"フォーム検出完了: 企業ID={company_id}, {len(forms)}個のフォームをデータベースに保存")
+                return forms
+                
         except Exception as e:
             logger.error(f"フォーム検出エラー {url}: {e}")
+            # エラーステータスに更新
+            company.form_detection_status = FormDetectionStatus.ERROR
+            company.form_detection_error_message = str(e)
+            db.commit()
+            
             # 失敗を記録
             self.compliance_manager.record_request_result(url, False)
             raise
-        finally:
-            if page:
-                await self.browser_pool.return_page(page)
     
-    async def _find_contact_links(self, page: Page, base_url: str) -> List[str]:
+    async def _find_contact_links(self, page: Page, base_url: str) -> List[Dict]:
         """問い合わせページのリンクを検出"""
         contact_links = set()
         
@@ -184,9 +222,9 @@ class FormDetector:
         filtered_links = []
         for url in contact_links:
             if self._is_valid_contact_url(url, base_url):
-                filtered_links.append(url)
+                filtered_links.append({'url': url})
         
-        logger.info(f"検出された問い合わせURL: {filtered_links}")
+        logger.info(f"検出された問い合わせURL: {[link['url'] for link in filtered_links]}")
         return filtered_links[:5]  # 最大5つまで
     
     def _is_valid_contact_url(self, url: str, base_url: str) -> bool:
@@ -215,6 +253,26 @@ class FormDetector:
         except Exception:
             return False
     
+    async def _analyze_form_page(self, page: Page, form_url: str) -> Optional[Dict[str, Any]]:
+        """指定されたURLのページに移動してフォームを分析"""
+        try:
+            # ページに移動
+            await page.goto(form_url, wait_until="domcontentloaded", timeout=30000)
+            
+            # フォームを分析
+            forms = await self._analyze_forms(page, form_url)
+            
+            # 最初の（通常は最も適切な）フォームを返す
+            if forms:
+                return forms[0]
+            else:
+                logger.info(f"フォームが見つかりませんでした: {form_url}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"フォームページ分析エラー {form_url}: {e}")
+            return None
+    
     async def _analyze_forms(self, page: Page, form_url: str) -> List[Dict[str, Any]]:
         """ページ内のフォームを解析"""
         forms = []
@@ -229,7 +287,7 @@ class FormDetector:
             
             for i, form_element in enumerate(form_elements):
                 try:
-                    form_data = await self._analyze_single_form(form_element, form_url, i)
+                    form_data = await self._analyze_single_form(form_element, form_url, i, page)
                     if form_data:
                         forms.append(form_data)
                         
@@ -242,7 +300,7 @@ class FormDetector:
         
         return forms
     
-    async def _analyze_single_form(self, form_element: Locator, form_url: str, form_index: int) -> Optional[Dict[str, Any]]:
+    async def _analyze_single_form(self, form_element: Locator, form_url: str, form_index: int, page: Page) -> Optional[Dict[str, Any]]:
         """単一フォームの詳細解析"""
         try:
             # フォームフィールドを取得
@@ -254,7 +312,7 @@ class FormDetector:
             fields = []
             
             for field in input_fields:
-                field_data = await self._analyze_field(field)
+                field_data = await self._analyze_field(field, page)
                 if field_data:
                     fields.append(field_data)
             
@@ -263,7 +321,7 @@ class FormDetector:
             submit_selector = await self._get_field_selector(submit_button) if submit_button else ""
             
             # reCAPTCHAの有無をチェック
-            has_recaptcha = await self._detect_recaptcha(form_element)
+            has_recaptcha = await self._detect_recaptcha(form_element, page)
             
             return {
                 "form_url": form_url,
@@ -277,7 +335,7 @@ class FormDetector:
             logger.error(f"単一フォーム解析エラー: {e}")
             return None
     
-    async def _analyze_field(self, field: Locator) -> Optional[Dict[str, Any]]:
+    async def _analyze_field(self, field: Locator, page: Page) -> Optional[Dict[str, Any]]:
         """フォームフィールドの詳細解析"""
         try:
             # 基本属性を取得
@@ -289,7 +347,7 @@ class FormDetector:
             required = await field.evaluate("el => el.required")
             
             # ラベルを検出
-            label = await self._find_field_label(field)
+            label = await self._find_field_label(field, page)
             
             # フィールドタイプを判定
             detected_type = self._determine_field_type(
@@ -322,7 +380,7 @@ class FormDetector:
             logger.error(f"フィールド解析エラー: {e}")
             return None
     
-    async def _find_field_label(self, field: Locator) -> Optional[str]:
+    async def _find_field_label(self, field: Locator, page: Page) -> Optional[str]:
         """フィールドのラベルを検出"""
         try:
             # aria-label属性
@@ -334,7 +392,7 @@ class FormDetector:
             field_id = await field.get_attribute("id")
             if field_id:
                 try:
-                    label_element = self.current_page.locator(f"label[for='{field_id}']")
+                    label_element = page.locator(f"label[for='{field_id}']")
                     label_text = await label_element.text_content()
                     if label_text:
                         return label_text.strip()
@@ -464,7 +522,7 @@ class FormDetector:
             logger.error(f"送信ボタン検出エラー: {e}")
             return None
     
-    async def _detect_recaptcha(self, form_element: Locator) -> bool:
+    async def _detect_recaptcha(self, form_element: Locator, page: Page) -> bool:
         """reCAPTCHAの有無を検出"""
         try:
             # reCAPTCHA関連の要素を検索
@@ -482,7 +540,7 @@ class FormDetector:
             
             # ページ全体でもチェック
             for selector in recaptcha_selectors:
-                if await self.current_page.locator(selector).count() > 0:
+                if await page.locator(selector).count() > 0:
                     return True
             
             return False
@@ -491,7 +549,7 @@ class FormDetector:
             logger.error(f"reCAPTCHA検出エラー: {e}")
             return False
     
-    async def _save_form_to_db(self, db: Session, company_id: int, form_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _save_form_to_db(self, db: Session, company_id: int, form_data: Dict[str, Any]) -> Dict[str, Any]:
         """フォームデータをデータベースに保存"""
         try:
             # フォームレコードを作成
