@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Button } from '../components/ui/button';
 import { Card } from '../components/ui/card';
 import { LoadingSpinner } from '../components/ui/LoadingSpinner';
@@ -29,50 +29,211 @@ export function TemplatesPage() {
 
   const ITEMS_PER_PAGE = 10;
 
-  useEffect(() => {
-    loadTemplates();
-    loadCategories();
-  }, [currentPage, filters]);
+  // 初期化時のデバッグログ
+  console.log('🚀 TemplatesPage初期化', {
+    hasAccessToken: !!localStorage.getItem('access_token'),
+    hasUser: !!localStorage.getItem('user'),
+    tokenLength: localStorage.getItem('access_token')?.length || 0,
+    apiBaseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api',
+    initialState: {
+      templatesCount: templates.length,
+      loading,
+      error,
+      currentPage,
+      filters
+    },
+    timestamp: new Date().toISOString()
+  });
 
-  const loadTemplates = async () => {
+  const loadTemplates = useCallback(async () => {
+    let ignore = false; // レースコンディション対策
+    
     try {
       setLoading(true);
+      console.log('🔄 テンプレート取得開始', {
+        currentPage,
+        itemsPerPage: ITEMS_PER_PAGE,
+        skip: (currentPage - 1) * ITEMS_PER_PAGE,
+        categoryFilter: filters.category,
+        searchFilter: filters.search,
+        timestamp: new Date().toISOString()
+      });
+      
       const data = await templatesApi.getTemplates({
         skip: (currentPage - 1) * ITEMS_PER_PAGE,
         limit: ITEMS_PER_PAGE,
         category: filters.category || undefined
       });
       
+      // レースコンディションチェック
+      if (ignore) {
+        console.log('🚫 テンプレート取得結果を無視（レースコンディション対策）');
+        return;
+      }
+      
+      console.log('📥 API レスポンス受信', {
+        dataType: typeof data,
+        isArray: Array.isArray(data),
+        dataLength: Array.isArray(data) ? data.length : 'N/A',
+        data: data,
+        timestamp: new Date().toISOString()
+      });
+      
       // データが配列であることを確認
       const safeData = Array.isArray(data) ? data : [];
       
+      // データ構造の詳細チェック（デバッグ用）
+      if (safeData.length > 0) {
+        const sampleTemplate = safeData[0];
+        console.log('🔍 テンプレートデータ構造チェック:', {
+          id: sampleTemplate.id,
+          name: sampleTemplate.name,
+          fieldsType: typeof sampleTemplate.fields,
+          fieldsIsArray: Array.isArray(sampleTemplate.fields),
+          fieldsLength: Array.isArray(sampleTemplate.fields) ? sampleTemplate.fields.length : 'N/A',
+          variablesType: typeof sampleTemplate.variables,
+          variablesIsArray: Array.isArray(sampleTemplate.variables),
+          variablesLength: Array.isArray(sampleTemplate.variables) ? sampleTemplate.variables.length : 'N/A',
+          sampleData: {
+            fields: sampleTemplate.fields,
+            variables: sampleTemplate.variables
+          }
+        });
+      }
+      
+      // fieldsとvariablesの配列が存在することを確認し、存在しない場合は空配列で初期化
+      const normalizedData = safeData.map(template => ({
+        ...template,
+        fields: Array.isArray(template.fields) ? template.fields : [],
+        variables: Array.isArray(template.variables) ? template.variables : []
+      }));
+      
       // フィルタリング処理（検索）
       const filteredData = filters.search 
-        ? safeData.filter(template => 
+        ? normalizedData.filter(template => 
             template.name.toLowerCase().includes(filters.search.toLowerCase()) ||
             template.description?.toLowerCase().includes(filters.search.toLowerCase())
           )
-        : safeData;
+        : normalizedData;
       
-      setTemplates(filteredData);
-      setError(null);
+      console.log('✅ データ処理完了', {
+        originalCount: safeData.length,
+        normalizedCount: normalizedData.length,
+        filteredCount: filteredData.length,
+        searchFilter: filters.search,
+        timestamp: new Date().toISOString()
+      });
+      
+      if (!ignore) { // 再度レースコンディションチェック
+        setTemplates(filteredData);
+        setError(null);
+      }
     } catch (err) {
-      setError('テンプレートの取得に失敗しました');
+      if (ignore) {
+        console.log('🚫 エラー処理を無視（レースコンディション対策）');
+        return;
+      }
+      
+      console.error('❌ テンプレート取得エラー:', {
+        error: err,
+        message: err instanceof Error ? err.message : 'Unknown error',
+        stack: err instanceof Error ? err.stack : undefined,
+        timestamp: new Date().toISOString()
+      });
+      
+      // 詳細なエラーメッセージを生成
+      let errorMessage = 'テンプレートの取得に失敗しました';
+      
+      if (err && typeof err === 'object' && 'status' in err) {
+        const status = (err as any).status;
+        switch (status) {
+          case 401:
+            errorMessage = '認証エラー：ログインし直してください';
+            break;
+          case 403:
+            errorMessage = '権限エラー：テンプレートにアクセスする権限がありません';
+            break;
+          case 404:
+            errorMessage = 'APIエンドポイントが見つかりません';
+            break;
+          case 500:
+            errorMessage = 'サーバーエラーが発生しました';
+            break;
+          default:
+            errorMessage = `テンプレートの取得に失敗しました (HTTP ${status})`;
+        }
+      } else if (err instanceof Error) {
+        if (err.message.includes('Network Error') || err.message.includes('fetch')) {
+          errorMessage = 'ネットワークエラー：サーバーに接続できません';
+        } else {
+          errorMessage = `エラー: ${err.message}`;
+        }
+      }
+      
+      setError(errorMessage);
       setTemplates([]); // エラー時は空配列を設定
-      console.error('Templates loading error:', err);
     } finally {
-      setLoading(false);
+      if (!ignore) {
+        setLoading(false);
+      }
     }
-  };
+    
+    // クリーンアップ関数を返す
+    return () => {
+      console.log('🧹 loadTemplates クリーンアップ実行');
+      ignore = true;
+    };
+  }, [currentPage, filters.category, filters.search]);
 
-  const loadCategories = async () => {
+  const loadCategories = useCallback(async () => {
     try {
+      console.log('🔄 カテゴリ取得開始');
       const data = await templatesApi.getTemplateCategories();
+      console.log('📥 カテゴリ API レスポンス受信', {
+        dataType: typeof data,
+        data: data
+      });
       setCategories(data);
+      console.log('✅ カテゴリ設定完了');
     } catch (err) {
-      console.error('Categories loading error:', err);
+      console.error('❌ カテゴリ取得エラー:', {
+        error: err,
+        message: err instanceof Error ? err.message : 'Unknown error',
+        stack: err instanceof Error ? err.stack : undefined
+      });
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    let cleanupTemplates: (() => void) | undefined;
+    let cleanupCategories: (() => void) | undefined;
+    
+    console.log('🔄 useEffect実行 - loadTemplates & loadCategories', {
+      currentPage,
+      'filters.category': filters.category,
+      'filters.search': filters.search,
+      timestamp: new Date().toISOString()
+    });
+    
+    // テンプレートロード（クリーンアップ関数を取得）
+    const executeLoadTemplates = async () => {
+      cleanupTemplates = await loadTemplates();
+    };
+    
+    executeLoadTemplates();
+    loadCategories();
+    
+    // クリーンアップ関数
+    return () => {
+      console.log('🧹 useEffect クリーンアップ実行');
+      if (cleanupTemplates) {
+        cleanupTemplates();
+      }
+      if (cleanupCategories) {
+        cleanupCategories();
+      }
+    };
+  }, [currentPage, filters.category, filters.search, loadTemplates, loadCategories]); // 関数も依存配列に含める
 
   const handleDeleteTemplate = async (id: number) => {
     if (!confirm('このテンプレートを削除してもよろしいですか？')) {
@@ -101,6 +262,134 @@ export function TemplatesPage() {
       hour: '2-digit',
       minute: '2-digit'
     });
+  };
+
+  const handleDebugCount = async () => {
+    try {
+      console.log('🐛 デバッグカウント開始');
+      
+      // 基本的な環境情報を確認
+      const token = localStorage.getItem('access_token');
+      const user = localStorage.getItem('user');
+      
+      console.log('🔧 環境情報:', {
+        baseURL: import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api',
+        mode: import.meta.env.MODE,
+        hasToken: !!token,
+        tokenLength: token?.length || 0,
+        hasUser: !!user,
+        userInfo: user ? JSON.parse(user) : null,
+        currentURL: window.location.href
+      });
+      
+      // 認証チェック
+      if (!token) {
+        throw new Error('認証トークンが見つかりません。ログインが必要です。');
+      }
+      
+      // AXIOS完全バイパステスト - fetch APIで直接呼び出し
+      console.log('🧪 Fetch API直接テスト開始');
+      try {
+        const baseURL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api';
+        const fetchUrl = `${baseURL}/templates/debug/count`;
+        console.log('🧪 Fetch URL:', fetchUrl);
+        
+        const fetchResponse = await fetch(fetchUrl, {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          }
+        });
+        
+        console.log('🧪 Fetch Response:', {
+          status: fetchResponse.status,
+          statusText: fetchResponse.statusText,
+          ok: fetchResponse.ok
+        });
+        
+        const fetchData = await fetchResponse.json();
+        console.log('🧪 Fetch Data:', fetchData);
+        
+        if (fetchData && typeof fetchData === 'object') {
+          alert(`✅ Fetch API成功！
+総テンプレート数: ${fetchData.total_templates}
+総フィールド数: ${fetchData.total_fields}
+総変数数: ${fetchData.total_variables}
+
+Axios APIでテストを続行します...`);
+        }
+      } catch (fetchError) {
+        console.error('🧪 Fetch API エラー:', fetchError);
+        alert(`❌ Fetch API失敗: ${fetchError instanceof Error ? fetchError.message : 'Unknown'}`);
+        return;
+      }
+      
+      console.log('🔄 Axios API テスト開始');
+      const debugData = await templatesApi.getDebugCount();
+      console.log('🐛 デバッグカウント結果（詳細）:', {
+        data: debugData,
+        type: typeof debugData,
+        isObject: debugData && typeof debugData === 'object',
+        keys: debugData ? Object.keys(debugData) : 'N/A',
+        hasExpectedFields: {
+          total_templates: 'total_templates' in (debugData || {}),
+          total_fields: 'total_fields' in (debugData || {}),
+          total_variables: 'total_variables' in (debugData || {}),
+          sample_templates: 'sample_templates' in (debugData || {})
+        }
+      });
+      
+      // データの存在チェック
+      if (!debugData || typeof debugData !== 'object') {
+        throw new Error(`Invalid response data: ${JSON.stringify(debugData)}`);
+      }
+      
+      // 安全にプロパティを取得
+      const totalTemplates = debugData.total_templates ?? 'N/A';
+      const totalFields = debugData.total_fields ?? 'N/A';
+      const totalVariables = debugData.total_variables ?? 'N/A';
+      const sampleCount = Array.isArray(debugData.sample_templates) ? debugData.sample_templates.length : 'N/A';
+      
+      alert(`デバッグ結果：
+総テンプレート数: ${totalTemplates}
+総フィールド数: ${totalFields}
+総変数数: ${totalVariables}
+サンプルテンプレート数: ${sampleCount}
+
+詳細はコンソールログとネットワークタブをご確認ください。`);
+    } catch (err) {
+      console.error('🐛 デバッグカウントエラー（詳細）:', {
+        error: err,
+        message: err instanceof Error ? err.message : 'Unknown error',
+        stack: err instanceof Error ? err.stack : undefined,
+        response: (err as any)?.response ? {
+          status: (err as any).response.status,
+          statusText: (err as any).response.statusText,
+          data: (err as any).response.data,
+          headers: (err as any).response.headers
+        } : undefined
+      });
+      
+      // 特定のエラーケースに対する対処法を提示
+      let errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      let solution = '';
+      
+      if (errorMessage.includes('認証トークンが見つかりません')) {
+        solution = '\n\n💡 対処法: /login ページでログインしてください。';
+      } else if (errorMessage.includes('Network Error') || errorMessage.includes('ERR_CONNECTION_REFUSED')) {
+        solution = '\n\n💡 対処法: バックエンドサーバーが起動しているか確認してください。\nターミナルで: cd backend && uvicorn app.main:app --reload';
+      } else if ((err as any)?.response?.status === 401) {
+        solution = '\n\n💡 対処法: 認証が無効です。再ログインしてください。';
+      } else if ((err as any)?.response?.status === 404) {
+        solution = '\n\n💡 対処法: APIエンドポイントが見つかりません。バックエンドの設定を確認してください。';
+      }
+      
+      alert(`デバッグ実行中にエラーが発生しました：
+${errorMessage}${solution}
+
+詳細はコンソールログとネットワークタブをご確認ください。`);
+    }
   };
 
   const totalPages = Math.ceil((categories?.total_templates || 0) / ITEMS_PER_PAGE);
@@ -132,15 +421,24 @@ export function TemplatesPage() {
           <h1 className="text-3xl font-bold text-gray-900">テンプレート管理</h1>
           <p className="text-gray-600 mt-1">問い合わせ内容のテンプレートを作成・管理します</p>
         </div>
-        <Button
-          onClick={() => setShowCreateModal(true)}
-          className="bg-blue-600 hover:bg-blue-700"
-        >
-          <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-          </svg>
-          新規テンプレート
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            onClick={handleDebugCount}
+            variant="outline"
+            className="text-orange-600 border-orange-300 hover:bg-orange-50"
+          >
+            🐛 デバッグ
+          </Button>
+          <Button
+            onClick={() => setShowCreateModal(true)}
+            className="bg-blue-600 hover:bg-blue-700"
+          >
+            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+            </svg>
+            新規テンプレート
+          </Button>
+        </div>
       </div>
 
       {/* フィルター */}
@@ -218,8 +516,8 @@ export function TemplatesPage() {
                     <p className="text-gray-600 mb-3">{template.description}</p>
                   )}
                   <div className="flex items-center gap-4 text-sm text-gray-500">
-                    <span>フィールド数: {template.fields.length}</span>
-                    <span>変数数: {template.variables.length}</span>
+                    <span>フィールド数: {Array.isArray(template.fields) ? template.fields.length : 0}</span>
+                    <span>変数数: {Array.isArray(template.variables) ? template.variables.length : 0}</span>
                     <span>更新日: {formatDate(template.updated_at)}</span>
                   </div>
                 </div>

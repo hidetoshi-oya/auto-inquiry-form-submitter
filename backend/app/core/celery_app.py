@@ -93,9 +93,9 @@ celery_app.conf.beat_schedule = {
 
 # Redis接続の取得
 def get_redis_connection():
-    """Redis接続を取得"""
+    """Redis接続を取得（結果バックエンドと同じDB 2を使用）"""
     try:
-        return redis.Redis(host='redis', port=6379, db=1, decode_responses=True)
+        return redis.Redis(host='redis', port=6379, db=2, decode_responses=True)
     except Exception as e:
         logger.error(f"Redis接続エラー: {e}")
         return None

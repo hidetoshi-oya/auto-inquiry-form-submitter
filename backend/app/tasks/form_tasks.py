@@ -27,7 +27,7 @@ def record_task_to_redis(task_id: str, task_name: str, status: str):
     """タスク履歴をRedisに記録"""
     try:
         import redis
-        r = redis.Redis(host='redis', port=6379, db=1, decode_responses=True)
+        r = redis.Redis(host='redis', port=6379, db=2, decode_responses=True)
         
         # タスク履歴リストに追加（最新100件まで保持）
         r.lpush('celery:task_history', task_id)

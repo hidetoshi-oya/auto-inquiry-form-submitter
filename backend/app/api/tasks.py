@@ -29,8 +29,14 @@ def get_task_info_from_result(task_id: str, result: AsyncResult) -> TaskInfo:
         # タスクの基本情報を取得
         task_info = result.info or {}
         
-        # タスク状態をTaskStatusに変換
-        status = TaskStatus(result.state) if result.state in TaskStatus.__members__ else TaskStatus.PENDING
+        # タスク状態をTaskStatusに変換（Celeryの標準状態を優先）
+        celery_state = result.state or 'PENDING'
+        if celery_state in TaskStatus.__members__:
+            status = TaskStatus(celery_state)
+        else:
+            # 未知の状態の場合はPENDINGとして扱う
+            logger.warning(f"Unknown task state '{celery_state}' for task {task_id}, defaulting to PENDING")
+            status = TaskStatus.PENDING
         
         # 結果の処理
         task_result = None
@@ -42,45 +48,48 @@ def get_task_info_from_result(task_id: str, result: AsyncResult) -> TaskInfo:
         # タスク名の取得：複数のソースから取得を試行
         task_name = "unknown"
         
-        # 1. AsyncResultから取得を試行
+        # 1. AsyncResultから取得を試行（最も信頼性が高い）
         if result.name:
             task_name = result.name
+        elif hasattr(result, '_cache') and result._cache and 'task' in result._cache:
+            # 2. キャッシュから取得を試行
+            cached_task = result._cache['task']
+            if cached_task:
+                task_name = cached_task
         else:
-            # 2. Redisから取得を試行
+            # 3. Redisから取得を試行（結果バックエンドのDB 2を使用）
             try:
                 import redis
-                r = redis.Redis(host='redis', port=6379, db=1, decode_responses=True)
+                r = redis.Redis(host='redis', port=6379, db=2, decode_responses=True)
                 redis_task_name = r.hget(f'celery:task:{task_id}', 'task_name')
                 if redis_task_name and redis_task_name != 'unknown':
                     task_name = redis_task_name
-                else:
-                    # 3. タスクIDから推測（最後の手段）
-                    # 通常のCeleryタスクIDは'task_module.task_function'形式で始まることが多い
-                    if hasattr(result, '_cache') and result._cache and 'task' in result._cache:
-                        cached_task = result._cache['task']
-                        if cached_task:
-                            task_name = cached_task
             except Exception as redis_e:
                 logger.debug(f"Redisからタスク名取得エラー {task_id}: {redis_e}")
+                # Redis接続に失敗してもアプリケーションは継続
             
-        # 日付情報の処理
+        # 日付情報の処理（Celeryの標準機能を優先）
         date_created = None
         date_started = None
         date_done = None
         
-        # メタデータから日付情報を取得（利用可能な場合）
+        # 1. Celeryの標準属性から取得
+        if hasattr(result, 'date_done') and result.date_done:
+            date_done = result.date_done
+        
+        # 2. メタデータから日付情報を取得
         if isinstance(task_info, dict):
-            if 'date_created' in task_info:
+            if 'date_created' in task_info and not date_created:
                 date_created = task_info['date_created']
-            if 'date_started' in task_info:
+            if 'date_started' in task_info and not date_started:
                 date_started = task_info['date_started']
-            if 'date_done' in task_info:
+            if 'date_done' in task_info and not date_done:
                 date_done = task_info['date_done']
         
-        # Redisから追加の日付情報を取得
+        # 3. Redisから追加の日付情報を取得（補完用）
         try:
             import redis
-            r = redis.Redis(host='redis', port=6379, db=1, decode_responses=True)
+            r = redis.Redis(host='redis', port=6379, db=2, decode_responses=True)
             redis_started_at = r.hget(f'celery:task:{task_id}', 'started_at')
             redis_completed_at = r.hget(f'celery:task:{task_id}', 'completed_at')
             
@@ -92,6 +101,7 @@ def get_task_info_from_result(task_id: str, result: AsyncResult) -> TaskInfo:
                 date_done = datetime.fromtimestamp(float(redis_completed_at), tz=timezone.utc)
         except Exception as redis_e:
             logger.debug(f"Redisから日付情報取得エラー {task_id}: {redis_e}")
+            # Redisエラーは致命的ではないため、処理を継続
         
         return TaskInfo(
             task_id=task_id,
@@ -176,10 +186,10 @@ def get_task_status(
 
 
 def get_recent_task_ids_from_redis(limit: int = 100) -> List[str]:
-    """Redisから最近のタスクIDを取得"""
+    """Redisから最近のタスクIDを取得（結果バックエンドのDB 2を使用）"""
     try:
         import redis
-        r = redis.Redis(host='redis', port=6379, db=1, decode_responses=True)
+        r = redis.Redis(host='redis', port=6379, db=2, decode_responses=True)
         
         # タスク履歴リストから最新のタスクIDを取得
         task_ids = r.lrange('celery:task_history', 0, limit - 1)
@@ -264,13 +274,14 @@ def list_tasks(
                 if task_id not in processed_task_ids:
                     try:
                         result = AsyncResult(task_id, app=celery_app)
-                        # タスクの結果が存在する場合のみ追加
-                        if result.state in ['SUCCESS', 'FAILURE', 'REVOKED']:
+                        # タスクの結果が存在し、有効な状態の場合のみ追加
+                        if result.state and result.state in ['SUCCESS', 'FAILURE', 'REVOKED', 'PROGRESS', 'STARTED']:
                             task_info = get_task_info_from_result(task_id, result)
                             all_tasks.append(task_info)
                             processed_task_ids.add(task_id)
                     except Exception as e:
                         logger.debug(f"タスク {task_id} の詳細取得エラー: {e}")
+                        # 個別のタスクエラーは全体の処理を停止しない
                         continue
         
         # タスクを日時でソート（新しい順）

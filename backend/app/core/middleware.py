@@ -137,21 +137,39 @@ class InputValidationMiddleware(BaseHTTPMiddleware):
     
     def _is_suspicious_user_agent(self, user_agent: str) -> bool:
         """疑わしいUser-Agentをチェック"""
-        suspicious_patterns = [
-            "sqlmap",
-            "nikto",
-            "netsparker",
-            "acunetix",
-            "burp",
-            "nmap",
-            "masscan",
-            "python-requests",  # 自動化ツールの可能性
-            "curl/",           # cURLの直接使用
-            "wget/",           # wgetの使用
-            "<script",         # XSS試行
-            "javascript:",     # JavaScript URI
-            "vbscript:",       # VBScript URI
-        ]
+        # 開発環境では制限を緩和
+        from app.core.config import settings
+        if settings.DEBUG:
+            # 開発環境では明らかに悪意のあるもののみブロック
+            suspicious_patterns = [
+                "sqlmap",
+                "nikto",
+                "netsparker",
+                "acunetix",
+                "burp",
+                "nmap",
+                "masscan",
+                "<script",         # XSS試行
+                "javascript:",     # JavaScript URI
+                "vbscript:",       # VBScript URI
+            ]
+        else:
+            # 本番環境では厳格にチェック
+            suspicious_patterns = [
+                "sqlmap",
+                "nikto",
+                "netsparker",
+                "acunetix",
+                "burp",
+                "nmap",
+                "masscan",
+                "python-requests",  # 自動化ツールの可能性
+                "curl/",           # cURLの直接使用
+                "wget/",           # wgetの使用
+                "<script",         # XSS試行
+                "javascript:",     # JavaScript URI
+                "vbscript:",       # VBScript URI
+            ]
         
         user_agent_lower = user_agent.lower()
         return any(pattern in user_agent_lower for pattern in suspicious_patterns)

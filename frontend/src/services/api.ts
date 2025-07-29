@@ -123,14 +123,64 @@ apiClient.interceptors.request.use(
 // レスポンスインターセプター - エラーハンドリングとsnake_case→camelCase変換
 apiClient.interceptors.response.use(
   (response: AxiosResponse) => {
-    // レスポンスデータをcamelCaseに変換
-    response.data = convertKeysToCamelCase(response.data)
-    
-    // 開発環境でのレスポンスログ
+    // 開発環境でのレスポンス詳細ログ（変換前）
     if (import.meta.env.DEV) {
       const prefix = response.config.url?.includes('/forms/') ? '[FORMS-API-RESPONSE]' : '[API-RESPONSE]'
       console.log(`${prefix} ${response.status} ${response.config.url}`)
       
+      // デバッグエンドポイントの場合は詳細ログ
+      if (response.config.url?.includes('/debug/count')) {
+        console.group('🐛 Debug API Response Details')
+        console.log('📊 Raw Response Data:', response.data)
+        console.log('📊 Response Data Type:', typeof response.data)
+        console.log('📊 Response Data Keys:', response.data ? Object.keys(response.data) : 'N/A')
+        console.log('📊 Response Object:', {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+          config: response.config
+        })
+        console.log('📊 Data null check:', response.data === null)
+        console.log('📊 Data undefined check:', response.data === undefined)
+        console.log('📊 Data JSON stringify:', JSON.stringify(response.data))
+        console.log('⏰ Timestamp:', new Date().toISOString())
+        console.groupEnd()
+      }
+    }
+    
+    // レスポンスデータをcamelCaseに変換
+    const originalData = response.data;
+    
+    // デバッグエンドポイントの場合は変換をスキップ（一時的）
+    if (response.config.url?.includes('/debug/count')) {
+      console.group('🐛 Debug API Response - SKIPPING CONVERSION')
+      console.log('📊 Keeping Original Data:', originalData)
+      console.log('📊 Original Data Type:', typeof originalData)
+      console.log('📊 Original Data Keys:', originalData ? Object.keys(originalData) : 'N/A')
+      console.groupEnd()
+      // 変換をスキップして元のデータをそのまま使用
+    } else {
+      // 他のAPIコールでは通常通り変換
+      try {
+        response.data = convertKeysToCamelCase(response.data)
+        
+        // 変換後のデバッグログ
+        if (import.meta.env.DEV) {
+          console.group('🐛 Normal API Response After Conversion')
+          console.log('📊 Converted Data:', response.data)
+          console.log('📊 Converted Data Type:', typeof response.data)
+          console.log('📊 Converted Data Keys:', response.data ? Object.keys(response.data) : 'N/A')
+          console.groupEnd()
+        }
+      } catch (conversionError) {
+        console.error('❌ Key conversion error:', conversionError)
+        // 変換に失敗した場合は元のデータを使用
+        response.data = originalData;
+      }
+    }
+    
+    // 開発環境でのレスポンスログ
+    if (import.meta.env.DEV) {
       if (response.config.url?.includes('/forms/company')) {
         console.group('📥 /forms/company Response Details')
         console.log('📊 Response Data Length:', Array.isArray(response.data) ? response.data.length : 'Not an array')
@@ -146,6 +196,17 @@ apiClient.interceptors.response.use(
         console.log('🏢 Company ID:', response.data?.companyId)
         console.groupEnd()
       }
+    }
+    
+    // 最終確認：return直前でのデータ状態
+    if (import.meta.env.DEV && response.config.url?.includes('/debug/count')) {
+      console.group('🔚 Response Interceptor Final Check')
+      console.log('📊 Final response.data:', response.data)
+      console.log('📊 Final data type:', typeof response.data)
+      console.log('📊 Final data undefined?:', response.data === undefined)
+      console.log('📊 Final data null?:', response.data === null)
+      console.log('⏰ Final timestamp:', new Date().toISOString())
+      console.groupEnd()
     }
     
     return response
@@ -209,6 +270,16 @@ export const api = {
   get: async <T>(url: string, config?: AxiosRequestConfig): Promise<T> => {
     const normalizedUrl = normalizeUrl(url)
     const response = await apiClient.get<T>(normalizedUrl, config)
+    
+    // デバッグエンドポイントの場合は詳細ログ
+    if (import.meta.env.DEV && url.includes('/debug/count')) {
+      console.group('🔧 API Client Get Result')
+      console.log('📊 Final Response Data:', response.data)
+      console.log('📊 Final Data Type:', typeof response.data)
+      console.log('📊 Final Data Exists:', response.data !== undefined && response.data !== null)
+      console.groupEnd()
+    }
+    
     return response.data
   },
 

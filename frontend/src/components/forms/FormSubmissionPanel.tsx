@@ -32,6 +32,16 @@ export function FormSubmissionPanel({
     dryRun: true
   })
 
+  console.log('🔍 FormSubmissionPanel レンダリング:', {
+    templatesCount: templates?.length || 0,
+    templatesIsArray: Array.isArray(templates),
+    detectedFormsCount: detectedForms?.length || 0,
+    selectedFormId,
+    disabled,
+    templates: templates,
+    timestamp: new Date().toISOString()
+  });
+
   const selectedTemplate = templates.find(t => t.id === formData.selectedTemplateId)
   const selectedForm = detectedForms.find(f => f.id === selectedFormId)
 
@@ -121,22 +131,55 @@ export function FormSubmissionPanel({
             <label htmlFor="template-select" className="block text-sm font-medium text-gray-700 mb-2">
               送信テンプレートを選択
             </label>
+            {(() => {
+              console.log('🎯 テンプレート選択要素レンダリング:', {
+                templatesAvailable: templates?.length || 0,
+                templatesList: templates?.map(t => ({ id: t.id, name: t.name, category: t.category })) || []
+              });
+              return null;
+            })()}
             <select
               id="template-select"
               value={formData.selectedTemplateId}
-              onChange={(e) => setFormData(prev => ({ ...prev, selectedTemplateId: e.target.value }))}
+              onChange={(e) => {
+                console.log('📝 テンプレート選択変更:', e.target.value);
+                setFormData(prev => ({ ...prev, selectedTemplateId: e.target.value }));
+              }}
               disabled={isSubmitting}
               className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 
                          focus:ring-blue-500 focus:border-blue-500 disabled:bg-gray-100 
                          disabled:cursor-not-allowed"
             >
               <option value="">テンプレートを選択してください</option>
-              {templates.map((template) => (
-                <option key={template.id} value={template.id}>
-                  {template.name} ({template.category})
-                </option>
-              ))}
+              {templates && templates.length > 0 ? (
+                templates.map((template) => {
+                  console.log('🔧 オプション生成:', { id: template.id, name: template.name, category: template.category });
+                  return (
+                    <option key={template.id} value={template.id}>
+                      {template.name} ({template.category})
+                    </option>
+                  );
+                })
+              ) : (
+                <option value="" disabled>テンプレートが見つかりません</option>
+              )}
             </select>
+            {(!templates || templates.length === 0) && (
+              <div className="mt-2 text-sm text-amber-600 bg-amber-50 border border-amber-200 p-3 rounded-lg">
+                <div className="flex items-start">
+                  <svg className="w-4 h-4 text-amber-500 mt-0.5 mr-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16c-.77.833.192 2.5 1.732 2.5z" />
+                  </svg>
+                  <div>
+                    <p className="font-medium text-amber-700 mb-1">テンプレートが見つかりません</p>
+                    <p className="text-amber-600 text-xs">
+                      テンプレート管理画面で送信テンプレートを作成してください。<br/>
+                      既に作成済みの場合は、ページを再読み込みしてください。
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* テンプレート変数の入力 */}

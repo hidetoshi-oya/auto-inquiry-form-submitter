@@ -1,7 +1,7 @@
 from typing import Any, List
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.api import deps
 from app.core.database import get_db
@@ -23,6 +23,73 @@ from app.services.template_processor import template_processor
 router = APIRouter()
 
 
+@router.get("/debug/count")
+def debug_template_count(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(deps.get_current_active_user),
+) -> Any:
+    """デバッグ用：テンプレート数とサンプル確認"""
+    try:
+        print(f"🔍 [Debug] デバッグエンドポイント呼び出し")
+        print(f"🔍 [Debug] 現在のユーザー: {current_user.id if current_user else 'None'}")
+        
+        # 総テンプレート数
+        total_count = db.query(Template).count()
+        print(f"🔍 [Debug] 総テンプレート数: {total_count}")
+        
+        # fieldsテーブルの総数
+        from app.models.template import TemplateField, TemplateVariable
+        fields_count = db.query(TemplateField).count()
+        variables_count = db.query(TemplateVariable).count()
+        print(f"🔍 [Debug] 総フィールド数: {fields_count}, 総変数数: {variables_count}")
+        
+        # サンプルテンプレート（リレーション込み）
+        sample_templates = db.query(Template).options(
+            joinedload(Template.fields),
+            joinedload(Template.variables)
+        ).limit(3).all()
+        
+        print(f"🔍 [Debug] サンプルテンプレート取得: {len(sample_templates)}件")
+        
+        sample_data = []
+        for i, template in enumerate(sample_templates):
+            print(f"🔍 [Debug] サンプル{i+1}: ID={template.id}, name='{template.name}', fields={len(template.fields)}, vars={len(template.variables)}")
+            sample_data.append({
+                "id": template.id,
+                "name": template.name,
+                "category": template.category,
+                "fields_count": len(template.fields),
+                "variables_count": len(template.variables),
+                "fields": [{"key": f.key, "value": f.value, "type": f.field_type} for f in template.fields],
+                "variables": [{"name": v.name, "key": v.key, "default": v.default_value} for v in template.variables]
+            })
+        
+        result = {
+            "total_templates": total_count,
+            "total_fields": fields_count,
+            "total_variables": variables_count,
+            "sample_templates": sample_data
+        }
+        
+        print(f"🔍 [Debug] レスポンス準備完了: {result}")
+        return result
+        
+    except Exception as e:
+        print(f"❌ [Debug] デバッグエンドポイントエラー: {e}")
+        print(f"❌ [Debug] エラー詳細: {str(e)}")
+        import traceback
+        print(f"❌ [Debug] スタックトレース: {traceback.format_exc()}")
+        
+        # エラーレスポンスを返す
+        return {
+            "error": str(e),
+            "total_templates": 0,
+            "total_fields": 0,
+            "total_variables": 0,
+            "sample_templates": []
+        }
+
+
 @router.get("/", response_model=List[TemplateSchema])
 def read_templates(
     db: Session = Depends(get_db),
@@ -32,10 +99,30 @@ def read_templates(
     current_user: User = Depends(deps.get_current_active_user),
 ) -> Any:
     """テンプレート一覧を取得"""
-    query = db.query(Template)
+    print(f"🔍 [Backend] テンプレート一覧取得開始 - skip: {skip}, limit: {limit}, category: {category}")
+    print(f"🔍 [Backend] 現在のユーザー: {current_user.id if current_user else 'None'}")
+    
+    query = db.query(Template).options(
+        joinedload(Template.fields),
+        joinedload(Template.variables)
+    )
     if category:
         query = query.filter(Template.category == category)
+        print(f"🔍 [Backend] カテゴリフィルタ適用: {category}")
+    
     templates = query.offset(skip).limit(limit).all()
+    print(f"🔍 [Backend] DB取得結果: {len(templates)}件のテンプレート")
+    
+    # 詳細ログ
+    for i, template in enumerate(templates):
+        print(f"🔍 [Backend] テンプレート{i+1}: ID={template.id}, name='{template.name}', category='{template.category}'")
+        print(f"🔍 [Backend]   fields: {len(template.fields)}件, variables: {len(template.variables)}件")
+        for j, field in enumerate(template.fields):
+            print(f"🔍 [Backend]     field{j+1}: key='{field.key}', value='{field.value}', type='{field.field_type}'")
+        for j, var in enumerate(template.variables):
+            print(f"🔍 [Backend]     variable{j+1}: name='{var.name}', key='{var.key}', default='{var.default_value}'")
+    
+    print(f"🔍 [Backend] レスポンス準備完了")
     return templates
 
 
@@ -129,7 +216,10 @@ def read_template(
     current_user: User = Depends(deps.get_current_active_user),
 ) -> Any:
     """テンプレート詳細を取得"""
-    template = db.query(Template).filter(Template.id == template_id).first()
+    template = db.query(Template).options(
+        joinedload(Template.fields),
+        joinedload(Template.variables)
+    ).filter(Template.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     return template
@@ -146,7 +236,10 @@ def update_template(
     """テンプレートを更新"""
     from app.models.template import TemplateField, TemplateVariable
     
-    template = db.query(Template).filter(Template.id == template_id).first()
+    template = db.query(Template).options(
+        joinedload(Template.fields),
+        joinedload(Template.variables)
+    ).filter(Template.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     
@@ -194,7 +287,10 @@ def delete_template(
     current_user: User = Depends(deps.get_current_active_user),
 ) -> Any:
     """テンプレートを削除"""
-    template = db.query(Template).filter(Template.id == template_id).first()
+    template = db.query(Template).options(
+        joinedload(Template.fields),
+        joinedload(Template.variables)
+    ).filter(Template.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     
@@ -249,7 +345,10 @@ def preview_template_by_id(
     current_user: User = Depends(deps.get_current_active_user),
 ) -> Any:
     """保存済みテンプレートのプレビューを生成"""
-    template = db.query(Template).filter(Template.id == template_id).first()
+    template = db.query(Template).options(
+        joinedload(Template.fields),
+        joinedload(Template.variables)
+    ).filter(Template.id == template_id).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     
