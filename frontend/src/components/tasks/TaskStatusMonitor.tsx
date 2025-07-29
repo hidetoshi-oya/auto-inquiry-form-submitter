@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react'
 import { TaskStatusResponse, TaskStatus } from '../../types/models'
+import { authService } from '../../services/auth'
 
 interface TaskStatusMonitorProps {
   taskId: string
@@ -26,9 +27,14 @@ export function TaskStatusMonitor({
 
   const fetchTaskStatus = async () => {
     try {
+      const token = authService.getAccessToken()
+      if (!token) {
+        throw new Error('認証トークンが見つかりません。ログインしてください。')
+      }
+
       const response = await fetch(`/api/tasks/${taskId}/status`, {
         headers: {
-          'Authorization': `Bearer ${localStorage.getItem('token')}`,
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
       })
