@@ -15,6 +15,15 @@
         "-y",
         "@modelcontextprotocol/server-sequential-thinking"
       ]
+    },
+    "gemini-cli": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "@choplin/mcp-gemini-cli",
+        "--allow-npx"
+      ],
+      "env": {}
     }
   }
 }

@@ -39,6 +39,30 @@ def get_task_info_from_result(task_id: str, result: AsyncResult) -> TaskInfo:
         elif result.failed():
             task_result = str(result.result) if result.result else None
             
+        # タスク名の取得：複数のソースから取得を試行
+        task_name = "unknown"
+        
+        # 1. AsyncResultから取得を試行
+        if result.name:
+            task_name = result.name
+        else:
+            # 2. Redisから取得を試行
+            try:
+                import redis
+                r = redis.Redis(host='redis', port=6379, db=1, decode_responses=True)
+                redis_task_name = r.hget(f'celery:task:{task_id}', 'task_name')
+                if redis_task_name and redis_task_name != 'unknown':
+                    task_name = redis_task_name
+                else:
+                    # 3. タスクIDから推測（最後の手段）
+                    # 通常のCeleryタスクIDは'task_module.task_function'形式で始まることが多い
+                    if hasattr(result, '_cache') and result._cache and 'task' in result._cache:
+                        cached_task = result._cache['task']
+                        if cached_task:
+                            task_name = cached_task
+            except Exception as redis_e:
+                logger.debug(f"Redisからタスク名取得エラー {task_id}: {redis_e}")
+            
         # 日付情報の処理
         date_created = None
         date_started = None
@@ -53,9 +77,25 @@ def get_task_info_from_result(task_id: str, result: AsyncResult) -> TaskInfo:
             if 'date_done' in task_info:
                 date_done = task_info['date_done']
         
+        # Redisから追加の日付情報を取得
+        try:
+            import redis
+            r = redis.Redis(host='redis', port=6379, db=1, decode_responses=True)
+            redis_started_at = r.hget(f'celery:task:{task_id}', 'started_at')
+            redis_completed_at = r.hget(f'celery:task:{task_id}', 'completed_at')
+            
+            if redis_started_at and not date_started:
+                from datetime import datetime, timezone
+                date_started = datetime.fromtimestamp(float(redis_started_at), tz=timezone.utc)
+            if redis_completed_at and not date_done:
+                from datetime import datetime, timezone
+                date_done = datetime.fromtimestamp(float(redis_completed_at), tz=timezone.utc)
+        except Exception as redis_e:
+            logger.debug(f"Redisから日付情報取得エラー {task_id}: {redis_e}")
+        
         return TaskInfo(
             task_id=task_id,
-            task_name=result.name or "unknown",
+            task_name=task_name,
             status=status,
             result=task_result,
             traceback=result.traceback if result.failed() else None,
@@ -203,7 +243,15 @@ def list_tasks(
                     result = AsyncResult(task_id, app=celery_app)
                     task_info = get_task_info_from_result(task_id, result)
                     task_info.worker = worker_name
-                    task_info.eta = datetime.fromtimestamp(task_data.get('eta', 0), tz=timezone.utc)
+                    # ETAの安全な変換
+                    eta_value = task_data.get('eta', 0)
+                    try:
+                        if isinstance(eta_value, (int, float)) and eta_value > 0:
+                            task_info.eta = datetime.fromtimestamp(eta_value, tz=timezone.utc)
+                        else:
+                            task_info.eta = None
+                    except (ValueError, TypeError, OSError):
+                        task_info.eta = None
                     all_tasks.append(task_info)
                     processed_task_ids.add(task_id)
         

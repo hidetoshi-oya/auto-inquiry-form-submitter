@@ -18,7 +18,7 @@ from app.models.company import Company
 from app.models.template import Template
 from app.schemas.submission import SubmissionStatus
 from app.tasks.batch_tasks import batch_submission
-from app.tasks.form_tasks import AsyncTask
+# AsyncTaskは削除されました
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +153,8 @@ def system_health_check() -> Dict[str, Any]:
                 overall_health = "degraded"
                 issues.append("High failure rate in recent submissions")
             
-            if not browser_stats["healthy"]:
+            # ブラウザプールの問題は severity が "error" の場合のみ問題として扱う
+            if not browser_stats["healthy"] and browser_stats.get("severity") == "error":
                 overall_health = "degraded"
                 issues.append("Browser pool issues")
             
@@ -263,9 +264,10 @@ def check_browser_pool_health() -> Dict[str, Any]:
         
         if stats["status"] == "not_initialized":
             return {
-                "healthy": False,
+                "healthy": True,  # 初期化されていないのは正常な状態（初回起動時など）
                 "status": "not_initialized",
-                "note": "Browser pool not initialized"
+                "note": "Browser pool not initialized (will be initialized on first use or maintenance)",
+                "severity": "info"  # 情報レベル
             }
         
         # アクティブなブラウザの数をチェック
@@ -275,14 +277,16 @@ def check_browser_pool_health() -> Dict[str, Any]:
             "healthy": healthy,
             "status": stats["status"],
             "active_browsers": stats["active_browsers"],
-            "total_usage": stats["total_usage"]
+            "total_usage": stats["total_usage"],
+            "severity": "error" if not healthy else "info"
         }
         
     except Exception as e:
         logger.error(f"ブラウザプールヘルスチェックエラー: {e}")
         return {
             "healthy": False,
-            "error": str(e)
+            "error": str(e),
+            "severity": "error"
         }
 
 
@@ -430,8 +434,8 @@ def generate_daily_report() -> Dict[str, Any]:
         }
 
 
-@celery_app.task(base=AsyncTask, name="app.tasks.schedule_tasks.create_schedule")
-async def create_schedule(
+@celery_app.task(name="app.tasks.schedule_tasks.create_schedule")
+def create_schedule(
     name: str,
     company_ids: List[int],
     template_id: int,
@@ -445,62 +449,69 @@ async def create_schedule(
         db: Session = next(get_db())
         
         try:
-            # cron式の妥当性をチェック
-            try:
-                current_time = datetime.now(timezone.utc)
-                next_run = calculate_next_run_time(cron_expression, current_time)
-            except Exception as e:
-                return {
-                    "success": False,
-                    "error": f"Invalid cron expression: {cron_expression}",
-                    "details": str(e)
-                }
-            
-            # 企業とテンプレートの存在確認
-            companies = db.query(Company).filter(Company.id.in_(company_ids)).all()
+            # テンプレートの妥当性確認
             template = db.query(Template).filter(Template.id == template_id).first()
-            
-            if len(companies) != len(company_ids):
-                missing_ids = set(company_ids) - {c.id for c in companies}
-                return {
-                    "success": False,
-                    "error": f"Companies not found: {missing_ids}"
-                }
-            
             if not template:
-                return {
-                    "success": False,
-                    "error": f"Template not found: {template_id}"
-                }
+                raise ValueError(f"Template not found: {template_id}")
             
-            # スケジュールを作成
-            schedule = Schedule(
+            # 企業IDの妥当性確認
+            companies = db.query(Company).filter(Company.id.in_(company_ids)).all()
+            found_company_ids = {c.id for c in companies}
+            missing_ids = set(company_ids) - found_company_ids
+            
+            if missing_ids:
+                logger.warning(f"見つからない企業ID: {missing_ids}")
+            
+            valid_company_ids = list(found_company_ids)
+            
+            if not valid_company_ids:
+                raise ValueError("No valid companies found")
+            
+            # cron式の妥当性確認
+            try:
+                from croniter import croniter
+                from datetime import datetime, timezone
+                current_time = datetime.now(timezone.utc)
+                cron = croniter(cron_expression, current_time)
+                next_run = cron.get_next(datetime)
+            except Exception as e:
+                raise ValueError(f"Invalid cron expression: {cron_expression}, error: {e}")
+            
+            # 既存の同名スケジュールをチェック
+            existing_schedule = db.query(Schedule).filter(Schedule.name == name).first()
+            if existing_schedule:
+                raise ValueError(f"Schedule with name '{name}' already exists")
+            
+            # 新しいスケジュールを作成
+            new_schedule = Schedule(
                 name=name,
-                company_ids=company_ids,
+                company_ids=valid_company_ids,
                 template_id=template_id,
                 cron_expression=cron_expression,
                 enabled=enabled,
-                next_run_at=next_run
+                next_run_at=next_run.replace(tzinfo=timezone.utc),
+                created_at=current_time,
+                updated_at=current_time
             )
             
-            db.add(schedule)
+            db.add(new_schedule)
             db.commit()
-            db.refresh(schedule)
+            db.refresh(new_schedule)
             
-            logger.info(f"スケジュール作成完了: ID={schedule.id}")
+            logger.info(f"スケジュール作成完了: ID={new_schedule.id}, 名前={name}, 企業数={len(valid_company_ids)}")
             
             return {
                 "success": True,
                 "message": "Schedule created successfully",
-                "schedule": {
-                    "id": schedule.id,
-                    "name": schedule.name,
-                    "company_count": len(company_ids),
-                    "template_id": template_id,
-                    "cron_expression": cron_expression,
-                    "enabled": enabled,
-                    "next_run_at": next_run.isoformat()
-                }
+                "schedule_id": new_schedule.id,
+                "name": name,
+                "company_ids": valid_company_ids,
+                "invalid_company_ids": list(missing_ids),
+                "template_id": template_id,
+                "cron_expression": cron_expression,
+                "enabled": enabled,
+                "next_run_at": next_run.isoformat(),
+                "created_at": current_time.isoformat()
             }
             
         finally:
@@ -510,5 +521,10 @@ async def create_schedule(
         logger.error(f"スケジュール作成エラー: {e}")
         return {
             "success": False,
-            "error": str(e)
+            "error": str(e),
+            "name": name,
+            "company_ids": company_ids,
+            "template_id": template_id,
+            "cron_expression": cron_expression,
+            "enabled": enabled
         } 
