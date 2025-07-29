@@ -1,5 +1,4 @@
 import axios, { AxiosResponse, AxiosError, AxiosRequestConfig } from 'axios'
-import * as AxiosLogger from 'axios-logger'
 import { ApiError, PaginatedResponse } from '../types/api'
 
 // snake_caseをcamelCaseに変換するユーティリティ
@@ -51,26 +50,10 @@ if (BASE_URL && !BASE_URL.startsWith('/') && !BASE_URL.startsWith('http')) {
   throw new Error(`Invalid BASE_URL: ${BASE_URL}`)
 }
 
-// axios-logger設定
-AxiosLogger.setGlobalConfig({
-  prefixText: '[API]',
-  dateFormat: 'yyyy-mm-dd HH:MM:ss',
-  status: true,
-  statusText: true,
-  headers: true,
-  params: true,
-  data: true,
-  logger: (message: string) => {
-    // フォーム関連APIの場合は詳細ログを出力
-    if (message.includes('/forms/company') || message.includes('forms/detect')) {
-      console.group('🔍 Forms API Detailed Log')
-      console.log(message)
-      console.groupEnd()
-    } else {
-      console.log(message)
-    }
-  }
-})
+// 開発環境でのAPIログ設定
+if (import.meta.env.DEV) {
+  console.log('🔧 API Logger initialized for development')
+}
 
 // axiosインスタンスを作成
 // 相対パスの場合はbaseURLを設定せず、Viteのプロキシに任せる
@@ -111,41 +94,29 @@ apiClient.interceptors.request.use(
       config.headers.Authorization = `Bearer ${token}`
     }
     
-    // axios-loggerでリクエストをログ出力
-    return AxiosLogger.requestLogger(config, {
-      prefixText: config.url?.includes('/forms/') ? '[FORMS-API-REQUEST]' : '[API-REQUEST]',
-      dateFormat: 'yyyy-mm-dd HH:MM:ss',
-      status: true,
-      headers: true,
-      params: true,
-      data: true,
-      logger: (message: string) => {
-        if (config.url?.includes('/forms/company')) {
-          console.group('📤 /forms/company Request Details')
-          console.log(message)
-          console.log('🔗 Company ID:', config.url.match(/\/forms\/company\/(\d+)/)?.[1])
-          console.log('⏰ Timestamp:', new Date().toISOString())
-          console.groupEnd()
-        } else if (config.url?.includes('/forms/')) {
-          console.group('📤 Forms API Request')
-          console.log(message)
-          console.groupEnd()
-        } else {
-          console.log(message)
-        }
-      }
-    })
-  },
-  (error) => {
-    // エラーログも出力
-    return AxiosLogger.errorLogger(error, {
-      prefixText: '[API-REQUEST-ERROR]',
-      logger: (message: string) => {
-        console.group('❌ API Request Error')
-        console.error(message)
+    // 開発環境でのリクエストログ
+    if (import.meta.env.DEV) {
+      const prefix = config.url?.includes('/forms/') ? '[FORMS-API-REQUEST]' : '[API-REQUEST]'
+      console.log(`${prefix} ${config.method?.toUpperCase()} ${config.url}`)
+      
+      if (config.url?.includes('/forms/company')) {
+        console.group('📤 /forms/company Request Details')
+        console.log('🔗 Company ID:', config.url.match(/\/forms\/company\/(\d+)/)?.[1])
+        console.log('⏰ Timestamp:', new Date().toISOString())
         console.groupEnd()
       }
-    })
+    }
+    
+    return config
+  },
+  (error) => {
+    // エラーログ出力
+    if (import.meta.env.DEV) {
+      console.group('❌ API Request Error')
+      console.error(error)
+      console.groupEnd()
+    }
+    return Promise.reject(error)
   }
 )
 
@@ -155,67 +126,46 @@ apiClient.interceptors.response.use(
     // レスポンスデータをcamelCaseに変換
     response.data = convertKeysToCamelCase(response.data)
     
-    // axios-loggerでレスポンスをログ出力
-    return AxiosLogger.responseLogger(response, {
-      prefixText: response.config.url?.includes('/forms/') ? '[FORMS-API-RESPONSE]' : '[API-RESPONSE]',
-      dateFormat: 'yyyy-mm-dd HH:MM:ss',
-      status: true,
-      statusText: true,
-      headers: true,
-      data: true,
-      logger: (message: string) => {
-        if (response.config.url?.includes('/forms/company')) {
-          console.group('📥 /forms/company Response Details')
-          console.log(message)
-          console.log('📊 Response Data Length:', Array.isArray(response.data) ? response.data.length : 'Not an array')
-          console.log('⏱️ Response Time:', response.headers?.['x-response-time'] || 'N/A')
-          console.log('💾 Cache Status:', response.headers?.['x-cache'] || 'N/A')
-          console.log('⏰ Timestamp:', new Date().toISOString())
-          if (Array.isArray(response.data) && response.data.length > 0) {
-            console.log('🔍 First Form Preview:', response.data[0])
-          }
-          console.groupEnd()
-        } else if (response.config.url?.includes('/forms/detect')) {
-          console.group('📥 Forms Detection Response')
-          console.log(message)
-          console.log('🎯 Detection Status:', response.data?.status)
-          console.log('🆔 Task ID:', response.data?.taskId)
-          console.log('🏢 Company ID:', response.data?.companyId)
-          console.groupEnd()
-        } else if (response.config.url?.includes('/forms/')) {
-          console.group('📥 Forms API Response')
-          console.log(message)
-          console.groupEnd()
-        } else {
-          console.log(message)
+    // 開発環境でのレスポンスログ
+    if (import.meta.env.DEV) {
+      const prefix = response.config.url?.includes('/forms/') ? '[FORMS-API-RESPONSE]' : '[API-RESPONSE]'
+      console.log(`${prefix} ${response.status} ${response.config.url}`)
+      
+      if (response.config.url?.includes('/forms/company')) {
+        console.group('📥 /forms/company Response Details')
+        console.log('📊 Response Data Length:', Array.isArray(response.data) ? response.data.length : 'Not an array')
+        console.log('⏰ Timestamp:', new Date().toISOString())
+        if (Array.isArray(response.data) && response.data.length > 0) {
+          console.log('🔍 First Form Preview:', response.data[0])
         }
+        console.groupEnd()
+      } else if (response.config.url?.includes('/forms/detect')) {
+        console.group('📥 Forms Detection Response')
+        console.log('🎯 Detection Status:', response.data?.status)
+        console.log('🆔 Task ID:', response.data?.taskId)
+        console.log('🏢 Company ID:', response.data?.companyId)
+        console.groupEnd()
       }
-    })
+    }
+    
+    return response
   },
   (error: AxiosError<ApiError>) => {
-    // axios-loggerでエラーをログ出力
-    const loggedError = AxiosLogger.errorLogger(error, {
-      prefixText: '[API-RESPONSE-ERROR]',
-      logger: (message: string) => {
-        if (error.config?.url?.includes('/forms/company')) {
-          console.group('💥 /forms/company Error Details')
-          console.error(message)
-          console.log('🔗 Failed URL:', error.config?.url)
-          console.log('📊 Status Code:', error.response?.status)
-          console.log('📝 Error Detail:', error.response?.data?.detail)
-          console.log('⏰ Timestamp:', new Date().toISOString())
-          console.groupEnd()
-        } else if (error.config?.url?.includes('/forms/')) {
-          console.group('💥 Forms API Error')
-          console.error(message)
-          console.groupEnd()
-        } else {
-          console.group('💥 API Error')
-          console.error(message)
-          console.groupEnd()
-        }
+    // 開発環境でのエラーログ
+    if (import.meta.env.DEV) {
+      if (error.config?.url?.includes('/forms/company')) {
+        console.group('💥 /forms/company Error Details')
+        console.error('🔗 Failed URL:', error.config?.url)
+        console.error('📊 Status Code:', error.response?.status)
+        console.error('📝 Error Detail:', error.response?.data?.detail)
+        console.error('⏰ Timestamp:', new Date().toISOString())
+        console.groupEnd()
+      } else {
+        console.group('💥 API Error')
+        console.error(error)
+        console.groupEnd()
       }
-    })
+    }
     
     // 401エラー（認証失敗）の場合はトークンを削除してログインページにリダイレクト
     if (error.response?.status === 401) {

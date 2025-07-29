@@ -1,6 +1,9 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+import logging
 
 from app.api import auth, companies, forms, templates, submissions, schedules, compliance, tasks
 from app.core.config import settings
@@ -26,6 +29,21 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan
 )
+
+# 422 エラーの詳細ログ用例外ハンドラー
+logger = logging.getLogger(__name__)
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    logger.error(f"422 Validation Error on {request.method} {request.url.path}")
+    logger.error(f"Request headers: {dict(request.headers)}")
+    logger.error(f"Validation errors: {exc.errors()}")
+    logger.error(f"Request body: {exc.body}")
+    
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors()}
+    )
 
 # セキュリティミドルウェアの追加（順序重要）
 app.add_middleware(SecurityHeadersMiddleware)
