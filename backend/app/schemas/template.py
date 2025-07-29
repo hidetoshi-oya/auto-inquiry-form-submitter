@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 from pydantic import BaseModel, Field
 from enum import Enum
@@ -93,6 +93,55 @@ class TemplateListResponse(BaseModel):
     page: int
     per_page: int
     pages: int
+
+
+# プレビュー関連スキーマ
+class TemplatePreviewRequest(BaseModel):
+    """テンプレートプレビューリクエスト"""
+    template_content: str = Field(..., description="テンプレート内容")
+    variables: Optional[Dict[str, str]] = Field(default_factory=dict, description="カスタム変数")
+
+
+class TemplatePreviewResponse(BaseModel):
+    """テンプレートプレビューレスポンス"""
+    success: bool = Field(..., description="処理成功フラグ")
+    preview: str = Field(..., description="プレビュー内容")
+    variables_used: List[str] = Field(..., description="使用された変数リスト")
+    available_variables: List[str] = Field(..., description="利用可能な変数リスト")
+    error: Optional[str] = Field(None, description="エラーメッセージ")
+
+
+class TemplateVariableDefinition(BaseModel):
+    """テンプレート変数定義"""
+    name: str = Field(..., description="変数名（表示用）")
+    key: str = Field(..., description="変数キー")
+    default_value: Optional[str] = Field(None, description="デフォルト値")
+    description: Optional[str] = Field(None, description="説明")
+
+
+class TemplateValidationResponse(BaseModel):
+    """テンプレート検証レスポンス"""
+    valid: bool = Field(..., description="テンプレートが有効かどうか")
+    variables: List[str] = Field(..., description="抽出された変数リスト")
+    error: Optional[str] = Field(None, description="エラーメッセージ")
+
+
+class TemplateVariablesResponse(BaseModel):
+    """テンプレート変数一覧レスポンス"""
+    variables: List[TemplateVariableDefinition] = Field(..., description="変数定義リスト")
+
+
+class TemplateCategoryStats(BaseModel):
+    """テンプレートカテゴリ統計"""
+    category: str = Field(..., description="カテゴリ名")
+    count: int = Field(..., description="テンプレート数")
+    last_updated: Optional[datetime] = Field(None, description="最終更新日時")
+
+
+class TemplateCategoriesResponse(BaseModel):
+    """テンプレートカテゴリ一覧レスポンス"""
+    categories: List[TemplateCategoryStats] = Field(..., description="カテゴリ統計リスト")
+    total_templates: int = Field(..., description="総テンプレート数")
 
 
 # エイリアス

@@ -14,6 +14,7 @@ from playwright.async_api import Page, Locator
 from sqlalchemy.orm import Session
 
 from app.services.browser_pool import browser_pool
+from app.services.template_processor import template_processor
 from app.models.form import Form, FormField
 from app.models.template import Template, TemplateField
 from app.models.submission import Submission
@@ -49,20 +50,34 @@ class FormSubmitter:
             if not form:
                 raise ValueError(f"フォームが見つかりません: ID={form_id}")
             
+            # テンプレート情報を取得
+            template = db.query(Template).filter(Template.id == template_id).first()
+            if not template:
+                raise ValueError(f"テンプレートが見つかりません: ID={template_id}")
+            
+            # テンプレートフィールドを変数システムで処理
+            processed_data = {}
+            for field in template.fields:
+                # テンプレート変数を置換
+                processed_value = template_processor.process_template(
+                    field.value, template_data
+                )
+                processed_data[field.key] = processed_value
+            
             # 送信記録を作成
             submission = Submission(
                 company_id=form.company_id,
                 form_id=form_id,
                 template_id=template_id,
                 status=SubmissionStatus.PENDING,
-                submitted_data=template_data,
+                submitted_data=processed_data,
                 submitted_at=datetime.now(timezone.utc)
             )
             db.add(submission)
             db.flush()
             
             result = await self._execute_submission(
-                form, template_data, submission.id, take_screenshot, dry_run
+                form, processed_data, submission.id, take_screenshot, dry_run
             )
             
             # 結果を更新
