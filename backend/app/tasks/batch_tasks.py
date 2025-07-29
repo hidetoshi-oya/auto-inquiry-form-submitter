@@ -16,7 +16,7 @@ from app.models.form import Form
 from app.models.template import Template
 from app.models.submission import Submission
 from app.schemas.submission import SubmissionStatus
-from app.tasks.form_tasks import submit_form_task, AsyncTask
+from app.tasks.form_tasks import submit_form_task
 
 logger = logging.getLogger(__name__)
 
@@ -88,8 +88,8 @@ def batch_submission(
         }
 
 
-@celery_app.task(base=AsyncTask, bind=True, name="app.tasks.batch_tasks.batch_execution_task")
-async def batch_execution_task(
+@celery_app.task(bind=True, name="app.tasks.batch_tasks.batch_execution_task")
+def batch_execution_task(
     self,
     company_ids: List[int],
     template_id: int,
@@ -100,185 +100,189 @@ async def batch_execution_task(
     """バッチ送信実行タスク"""
     logger.info(f"バッチ送信実行開始: {len(company_ids)}社")
     
-    batch_results = []
-    successful_submissions = 0
-    failed_submissions = 0
-    captcha_required = 0
-    
     try:
         db: Session = next(get_db())
         
         try:
-            # テンプレート情報を取得
+            # テンプレートの妥当性確認
             template = db.query(Template).filter(Template.id == template_id).first()
+            if not template:
+                raise ValueError(f"Template not found: {template_id}")
             
+            # 進捗状態を更新
+            self.update_state(
+                state='PROGRESS',
+                meta={
+                    'current': 0,
+                    'total': len(company_ids),
+                    'status': 'バッチ送信実行中',
+                    'template_id': template_id
+                }
+            )
+            
+            processed_count = 0
+            successful_submissions = 0
+            failed_submissions = 0
+            captcha_required = 0
+            results = []
+            
+            # 各企業に対してフォーム送信を実行
             for i, company_id in enumerate(company_ids):
                 try:
-                    logger.info(f"送信実行 {i+1}/{len(company_ids)}: company_id={company_id}")
-                    
-                    # 企業とフォーム情報を取得
+                    # 企業情報を取得
                     company = db.query(Company).filter(Company.id == company_id).first()
                     if not company:
-                        logger.warning(f"企業が見つかりません: {company_id}")
+                        logger.warning(f"Company not found: {company_id}")
+                        failed_submissions += 1
+                        results.append({
+                            "company_id": company_id,
+                            "status": "failed",
+                            "error": "Company not found"
+                        })
                         continue
                     
+                    # 企業のフォームを取得
                     forms = db.query(Form).filter(Form.company_id == company_id).all()
                     if not forms:
-                        logger.warning(f"フォームが見つかりません: company_id={company_id}")
-                        batch_results.append({
+                        logger.warning(f"No forms found for company: {company_id}")
+                        failed_submissions += 1
+                        results.append({
                             "company_id": company_id,
-                            "company_name": company.name,
-                            "success": False,
+                            "status": "failed",
                             "error": "No forms found"
                         })
-                        failed_submissions += 1
                         continue
                     
                     # テンプレートデータを構築
-                    template_data = await build_template_data(company, template)
+                    template_data = {
+                        "company_name": company.name,
+                        "contact_name": template.sender_name or "お問い合わせ担当",
+                        "email": template.sender_email or "inquiry@example.com",
+                        "phone": template.sender_phone or "",
+                        "message": template.message_template or "お問い合わせ内容"
+                    }
                     
-                    # 最初のフォームで送信実行
+                    # 最初のフォームに送信（複数フォームがある場合は最初のものを使用）
                     form = forms[0]
                     
-                    result = await submit_form_task.apply_async(
-                        args=[form.id, template_id, template_data, take_screenshot, dry_run]
-                    ).get()
+                    # submit_form_task を同期的に実行
+                    from app.tasks.form_tasks import submit_form_task
+                    result = submit_form_task(
+                        form_id=form.id,
+                        template_id=template_id,
+                        template_data=template_data,
+                        take_screenshot=take_screenshot,
+                        dry_run=dry_run
+                    )
                     
-                    # 結果を記録
-                    if result.get("success"):
+                    # 結果を分析
+                    if result.get("success", False):
                         successful_submissions += 1
-                        status = "success"
-                        if result.get("result", {}).get("status") == "captcha_required":
-                            captcha_required += 1
-                            status = "captcha_required"
+                        results.append({
+                            "company_id": company_id,
+                            "company_name": company.name,
+                            "status": "success",
+                            "result": result
+                        })
+                    elif result.get("requires_manual_action", False):
+                        captcha_required += 1
+                        results.append({
+                            "company_id": company_id,
+                            "company_name": company.name,
+                            "status": "captcha_required",
+                            "error": result.get("error", "CAPTCHA required")
+                        })
                     else:
                         failed_submissions += 1
-                        status = "failed"
-                        if result.get("requires_manual_action"):
-                            captcha_required += 1
-                            status = "captcha_required"
+                        results.append({
+                            "company_id": company_id,
+                            "company_name": company.name,
+                            "status": "failed",
+                            "error": result.get("error", "Unknown error")
+                        })
                     
-                    batch_results.append({
-                        "company_id": company_id,
-                        "company_name": company.name,
-                        "form_id": form.id,
-                        "success": result.get("success", False),
-                        "status": status,
-                        "submission_id": result.get("result", {}).get("submission_id"),
-                        "error": result.get("error"),
-                        "processed_at": datetime.now(timezone.utc).isoformat()
-                    })
+                    processed_count += 1
                     
-                    # 次の送信まで間隔を空ける（最後でない場合）
-                    if i < len(company_ids) - 1:
-                        logger.info(f"送信間隔待機: {interval_seconds}秒")
-                        await asyncio.sleep(interval_seconds)
+                    # 進捗更新
+                    self.update_state(
+                        state='PROGRESS',
+                        meta={
+                            'current': processed_count,
+                            'total': len(company_ids),
+                            'status': f'{processed_count}/{len(company_ids)}社処理完了',
+                            'successful': successful_submissions,
+                            'failed': failed_submissions,
+                            'captcha': captcha_required
+                        }
+                    )
                     
+                    # インターバル（最後の処理でない場合のみ）
+                    if i < len(company_ids) - 1 and interval_seconds > 0:
+                        import time
+                        time.sleep(interval_seconds)
+                        
                 except Exception as e:
-                    logger.error(f"企業 {company_id} の送信処理でエラー: {e}")
-                    batch_results.append({
-                        "company_id": company_id,
-                        "success": False,
-                        "error": str(e),
-                        "processed_at": datetime.now(timezone.utc).isoformat()
-                    })
+                    logger.error(f"Company {company_id} processing error: {e}")
                     failed_submissions += 1
-                    continue
+                    processed_count += 1
+                    results.append({
+                        "company_id": company_id,
+                        "status": "failed",
+                        "error": str(e)
+                    })
             
-            # バッチ送信サマリーを生成
-            summary = {
+            # 成功率を計算
+            success_rate = (successful_submissions / processed_count * 100) if processed_count > 0 else 0
+            
+            # 最終結果
+            final_result = {
                 "success": True,
                 "message": "Batch execution completed",
-                "total_companies": len(company_ids),
+                "company_ids": company_ids,
+                "template_id": template_id,
+                "processed_count": processed_count,
                 "successful_submissions": successful_submissions,
                 "failed_submissions": failed_submissions,
                 "captcha_required": captcha_required,
-                "success_rate": (successful_submissions / len(company_ids)) * 100 if company_ids else 0,
-                "execution_time": datetime.now(timezone.utc).isoformat(),
-                "results": batch_results
+                "success_rate": round(success_rate, 2),
+                "results": results,
+                "dry_run": dry_run
             }
             
-            logger.info(f"バッチ送信完了: 成功={successful_submissions}, 失敗={failed_submissions}, CAPTCHA={captcha_required}")
+            logger.info(f"バッチ送信完了: {processed_count}社処理, 成功: {successful_submissions}, 失敗: {failed_submissions}, CAPTCHA: {captcha_required}")
             
-            # サマリーレポートを送信
-            await send_batch_completion_report.apply_async(args=[summary])
-            
-            return summary
+            return final_result
             
         finally:
             db.close()
     
     except Exception as e:
         logger.error(f"バッチ送信実行エラー: {e}")
+        
+        # エラー状態を更新
+        self.update_state(
+            state='FAILURE',
+            meta={
+                'error': str(e),
+                'company_ids': company_ids,
+                'template_id': template_id
+            }
+        )
+        
         return {
             "success": False,
             "error": str(e),
-            "partial_results": batch_results,
-            "processed_companies": len(batch_results)
+            "company_ids": company_ids,
+            "template_id": template_id,
+            "processed_count": 0,
+            "successful_submissions": 0,
+            "failed_submissions": 0,
+            "captcha_required": 0
         }
 
 
-async def build_template_data(company: Company, template: Template) -> Dict[str, Any]:
-    """テンプレートデータを構築"""
-    
-    # 基本的なテンプレートデータ
-    template_data = {
-        "company_name": company.name,
-        "company_url": company.url,
-        "contact_name": "営業担当",  # デフォルト値
-        "email": "info@yourcompany.com",  # 設定から取得予定
-        "phone": "03-1234-5678",  # 設定から取得予定
-        "current_date": datetime.now().strftime("%Y年%m月%d日"),
-        "current_year": datetime.now().year
-    }
-    
-    # テンプレートフィールドがある場合は追加
-    if hasattr(template, 'fields') and template.fields:
-        for field in template.fields:
-            if hasattr(field, 'default_value') and field.default_value:
-                template_data[field.name] = field.default_value
-    
-    # 基本的なメッセージを設定
-    if "message" not in template_data:
-        template_data["message"] = (
-            f"いつもお世話になっております。\n\n"
-            f"弊社サービスについてご案内させていただきたく、"
-            f"ご連絡させていただきました。\n\n"
-            f"お忙しい中恐縮ですが、ご検討のほどよろしくお願いいたします。"
-        )
-    
-    return template_data
-
-
-@celery_app.task(base=AsyncTask, name="app.tasks.batch_tasks.send_batch_completion_report")
-async def send_batch_completion_report(summary: Dict[str, Any]) -> Dict[str, Any]:
-    """バッチ送信完了レポートの送信"""
-    logger.info("バッチ送信完了レポート生成開始")
-    
-    try:
-        # レポート内容を生成
-        report = generate_batch_report(summary)
-        
-        # TODO: メール送信機能を実装
-        # await send_email_report(report)
-        
-        # TODO: Slack通知機能を実装
-        # await send_slack_notification(report)
-        
-        logger.info("バッチ送信完了レポート生成完了")
-        
-        return {
-            "success": True,
-            "message": "Report generated successfully",
-            "report": report
-        }
-        
-    except Exception as e:
-        logger.error(f"レポート生成エラー: {e}")
-        return {
-            "success": False,
-            "error": str(e)
-        }
+# build_template_data と send_batch_completion_report は一時的に無効化
+# 非同期処理の修正が必要
 
 
 def generate_batch_report(summary: Dict[str, Any]) -> Dict[str, Any]:
