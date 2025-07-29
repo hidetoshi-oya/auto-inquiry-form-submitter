@@ -60,7 +60,12 @@ export function TemplateFormModal({ isOpen, onClose, template, onSave }: Templat
 
   const resetForm = () => {
     setFormData({ name: '', category: '', description: '' });
-    setFields([]);
+    // 新規作成時はデフォルトでフィールドを1つ追加
+    setFields([
+      { key: 'name', value: '', field_type: 'static' },
+      { key: 'email', value: '', field_type: 'static' },
+      { key: 'message', value: '', field_type: 'static' }
+    ]);
     setVariables([]);
     setError(null);
   };
@@ -108,38 +113,64 @@ export function TemplateFormModal({ isOpen, onClose, template, onSave }: Templat
   };
 
   const validateForm = () => {
+    console.log('🔍 Starting form validation...');
+    console.log('📋 Form data to validate:', formData);
+    console.log('🏷️ Fields to validate:', fields);
+    console.log('🔧 Variables to validate:', variables);
+    
     if (!formData.name.trim()) {
+      console.log('❌ Validation failed: テンプレート名が空');
       setError('テンプレート名は必須です');
       return false;
     }
     if (!formData.category.trim()) {
+      console.log('❌ Validation failed: カテゴリが空');
       setError('カテゴリは必須です');
       return false;
     }
     if (fields.length === 0) {
+      console.log('❌ Validation failed: フィールドがない');
       setError('少なくとも1つのフィールドが必要です');
       return false;
     }
-    for (const field of fields) {
-      if (!field.key.trim() || !field.value.trim()) {
-        setError('全てのフィールドのキーと値を入力してください');
+    for (let i = 0; i < fields.length; i++) {
+      const field = fields[i];
+      if (!field.key.trim()) {
+        console.log('❌ Validation failed: フィールドのキーが空', field);
+        setError(`フィールド${i + 1}のキーを入力してください（例: name, email, message など）`);
+        return false;
+      }
+      if (!field.value.trim()) {
+        console.log('❌ Validation failed: フィールドの値が空', field);
+        setError(`フィールド${i + 1}の値を入力してください（例: {{company_name}}様 など）`);
         return false;
       }
     }
     for (const variable of variables) {
       if (!variable.name.trim() || !variable.key.trim()) {
+        console.log('❌ Validation failed: 変数の名前またはキーが空', variable);
         setError('全ての変数の名前とキーを入力してください');
         return false;
       }
     }
+    console.log('✅ Form validation passed');
     setError(null);
     return true;
   };
 
   const handleSave = async () => {
-    if (!validateForm()) return;
+    console.log('🚀 handleSave called');
+    console.log('📋 Form data:', formData);
+    console.log('🏷️ Fields:', fields);
+    console.log('🔧 Variables:', variables);
+    
+    if (!validateForm()) {
+      console.log('❌ Form validation failed');
+      return;
+    }
 
     try {
+      console.log('💾 Starting save process...');
       setSaving(true);
       const templateData: TemplateCreate = {
         ...formData,
@@ -147,18 +178,33 @@ export function TemplateFormModal({ isOpen, onClose, template, onSave }: Templat
         variables,
       };
 
+      console.log('📤 Template data to be sent:', templateData);
+
       if (isEditing && template) {
+        console.log('✏️ Updating existing template:', template.id);
         await templatesApi.updateTemplate(template.id, templateData);
+        console.log('✅ Template updated successfully');
       } else {
-        await templatesApi.createTemplate(templateData);
+        console.log('➕ Creating new template');
+        const result = await templatesApi.createTemplate(templateData);
+        console.log('✅ Template created successfully:', result);
       }
 
+      console.log('🔄 Calling onSave callback');
       onSave();
+      console.log('🚪 Calling onClose callback');
       onClose();
     } catch (err: any) {
+      console.error('💥 Save error occurred:', err);
+      console.error('💥 Error details:', {
+        message: err.message,
+        response: err.response,
+        status: err.response?.status,
+        data: err.response?.data
+      });
       setError(err.response?.data?.detail || 'テンプレートの保存に失敗しました');
-      console.error('Save error:', err);
     } finally {
+      console.log('🏁 Setting saving to false');
       setSaving(false);
     }
   };
@@ -185,8 +231,13 @@ export function TemplateFormModal({ isOpen, onClose, template, onSave }: Templat
             <div className="space-y-6">
               {/* エラー表示 */}
               {error && (
-                <div className="bg-red-50 border border-red-200 rounded-md p-4">
-                  <div className="text-red-800">{error}</div>
+                <div className="bg-red-50 border border-red-200 rounded-md p-4 mb-4">
+                  <div className="flex items-center">
+                    <svg className="w-5 h-5 text-red-400 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clipRule="evenodd" />
+                    </svg>
+                    <div className="text-red-800 font-medium">{error}</div>
+                  </div>
                 </div>
               )}
 
@@ -203,7 +254,8 @@ export function TemplateFormModal({ isOpen, onClose, template, onSave }: Templat
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                       value={formData.name}
                       onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
-                      placeholder="営業問い合わせテンプレート"
+                      placeholder="例: 営業問い合わせテンプレート（必須）"
+                      required
                     />
                   </div>
                   <div>
@@ -215,7 +267,8 @@ export function TemplateFormModal({ isOpen, onClose, template, onSave }: Templat
                       className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                       value={formData.category}
                       onChange={(e) => setFormData(prev => ({ ...prev, category: e.target.value }))}
-                      placeholder="営業, サポート, 商談 など"
+                      placeholder="例: 営業（必須）"
+                      required
                     />
                   </div>
                   <div>
@@ -235,8 +288,13 @@ export function TemplateFormModal({ isOpen, onClose, template, onSave }: Templat
 
               {/* フィールド管理 */}
               <Card className="p-4">
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-lg font-semibold">フィールド管理</h3>
+                <div className="flex justify-between items-start mb-4">
+                  <div>
+                    <h3 className="text-lg font-semibold">フィールド管理</h3>
+                    <p className="text-sm text-gray-600 mt-1">
+                      問い合わせフォームに入力する項目を設定します。最低1つのフィールドが必要です。
+                    </p>
+                  </div>
                   <Button onClick={handleAddField} size="sm">
                     <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
@@ -266,7 +324,7 @@ export function TemplateFormModal({ isOpen, onClose, template, onSave }: Templat
                             className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
                             value={field.key}
                             onChange={(e) => handleUpdateField(index, { key: e.target.value })}
-                            placeholder="name, email, message など"
+                            placeholder={index === 0 ? "name" : index === 1 ? "email" : index === 2 ? "message" : "field_name"}
                           />
                         </div>
                         <div>
@@ -302,7 +360,12 @@ export function TemplateFormModal({ isOpen, onClose, template, onSave }: Templat
                             rows={2}
                             value={field.value}
                             onChange={(e) => handleUpdateField(index, { value: e.target.value })}
-                            placeholder="こんにちは、{{company_name}}様"
+                            placeholder={
+                              index === 0 ? "田中 太郎" : 
+                              index === 1 ? "tanaka@example.com" : 
+                              index === 2 ? "{{company_name}}様\n\nいつもお世話になっております。\n{{your_name}}と申します。" : 
+                              "入力値またはテンプレート変数"
+                            }
                           />
                         </div>
                       </div>
@@ -394,7 +457,21 @@ export function TemplateFormModal({ isOpen, onClose, template, onSave }: Templat
           <Button variant="outline" onClick={onClose} disabled={saving}>
             キャンセル
           </Button>
-          <Button onClick={handleSave} disabled={saving} className="bg-blue-600 hover:bg-blue-700">
+          <Button 
+            onClick={() => {
+              console.log('🖱️ Create/Update button clicked');
+              console.log('⏳ Current saving state:', saving);
+              console.log('📝 Form validation before save:', {
+                name: formData.name,
+                category: formData.category,
+                fieldsCount: fields.length,
+                variablesCount: variables.length
+              });
+              handleSave();
+            }} 
+            disabled={saving || !formData.name.trim() || !formData.category.trim()} 
+            className="bg-blue-600 hover:bg-blue-700"
+          >
             {saving ? (
               <>
                 <LoadingSpinner className="w-4 h-4 mr-2" />

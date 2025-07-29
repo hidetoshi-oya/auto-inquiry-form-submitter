@@ -7,6 +7,8 @@ import { TaskStatusMonitor } from '../components/tasks/TaskStatusMonitor'
 import { Company, Form, Template, TaskStatus } from '../types/models'
 import { getCompaniesList } from '../services/companies'
 import { startFormDetection, getCompanyForms } from '../services/forms'
+import { templatesApi, Template as BackendTemplate, TemplateField as BackendTemplateField, TemplateVariable as BackendTemplateVariable } from '../services/templates'
+import { actualFormSubmission, dryRunFormSubmission } from '../services/submissions'
 
 interface FormsPageState {
   companies: Company[]
@@ -20,6 +22,77 @@ interface FormsPageState {
   error: string | null
   detectionTaskId: string | null
   detectionTaskStatus: TaskStatus | null
+}
+
+// バックエンドTemplateをフロントエンドTemplate型に変換
+function convertBackendTemplate(backendTemplate: BackendTemplate): Template {
+  console.log('🔄 convertBackendTemplate開始:', {
+    backendTemplateId: backendTemplate?.id,
+    name: backendTemplate?.name,
+    category: backendTemplate?.category,
+    fieldsCount: backendTemplate?.fields?.length || 0,
+    variablesCount: backendTemplate?.variables?.length || 0,
+    rawBackendTemplate: backendTemplate
+  });
+
+  // 必須フィールドの検証
+  if (!backendTemplate) {
+    throw new Error('バックエンドテンプレートがnullまたはundefinedです');
+  }
+
+  if (typeof backendTemplate.id === 'undefined' || backendTemplate.id === null) {
+    throw new Error(`テンプレートIDが無効です: ${backendTemplate.id}`);
+  }
+
+  if (!backendTemplate.name || typeof backendTemplate.name !== 'string') {
+    throw new Error(`テンプレート名が無効です: ${backendTemplate.name}`);
+  }
+
+  if (!backendTemplate.category || typeof backendTemplate.category !== 'string') {
+    throw new Error(`テンプレートカテゴリが無効です: ${backendTemplate.category}`);
+  }
+
+  try {
+    const converted: Template = {
+      id: String(backendTemplate.id), // より明示的にString()を使用
+      name: backendTemplate.name,
+      category: backendTemplate.category,
+      fields: (backendTemplate.fields || []).map((field: BackendTemplateField) => ({
+        key: field.key || '',
+        value: field.value || '',
+        type: (field.field_type as 'static' | 'variable') || 'static' // 型アサーション
+      })),
+      variables: (backendTemplate.variables || []).map((variable: BackendTemplateVariable) => ({
+        name: variable.name || '',
+        key: variable.key || '',
+        defaultValue: variable.default_value || '' // snake_caseのみサポート
+      })),
+      createdAt: new Date(backendTemplate.created_at || Date.now()),
+      updatedAt: new Date(backendTemplate.updated_at || Date.now())
+    };
+
+    console.log('✅ convertBackendTemplate完了:', {
+      originalId: backendTemplate.id,
+      originalIdType: typeof backendTemplate.id,
+      convertedId: converted.id,
+      convertedIdType: typeof converted.id,
+      name: converted.name,
+      category: converted.category,
+      fieldsCount: converted.fields.length,
+      variablesCount: converted.variables.length,
+      convertedTemplate: converted
+    });
+
+    return converted;
+  } catch (error) {
+    console.error('❌ convertBackendTemplateエラー:', {
+      error,
+      backendTemplate,
+      errorMessage: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined
+    });
+    throw new Error(`テンプレート変換エラー: ${error instanceof Error ? error.message : 'Unknown error'}`);
+  }
 }
 
 export function FormsPage() {
@@ -41,26 +114,102 @@ export function FormsPage() {
   useEffect(() => {
     let ignore = false
 
+    console.log('🚀 FormsPage初期化開始', {
+      hasAccessToken: !!localStorage.getItem('access_token'),
+      timestamp: new Date().toISOString()
+    });
+
     const fetchInitialData = async () => {
       try {
+        console.log('🔄 初期データ取得開始');
+
         // 実際のAPIから企業一覧とテンプレート一覧を取得
         const [companiesResponse, templatesData] = await Promise.all([
-          getCompaniesList(),
-          fetchTemplates()
+          getCompaniesList().catch(error => {
+            console.error('❌ Companies API error:', error)
+            return { items: [] }
+          }),
+          templatesApi.getTemplates().catch(error => {
+            console.error('❌ Templates API error:', {
+              error,
+              message: error instanceof Error ? error.message : 'Unknown error',
+              stack: error instanceof Error ? error.stack : undefined
+            })
+            return []
+          })
         ])
 
+        console.log('📥 API レスポンス受信:', {
+          companiesCount: companiesResponse?.items?.length || 0,
+          templatesDataType: typeof templatesData,
+          templatesIsArray: Array.isArray(templatesData),
+          templatesCount: Array.isArray(templatesData) ? templatesData.length : 'N/A',
+          rawTemplatesData: templatesData
+        });
+
         if (!ignore) {
+          // テンプレートデータの変換
+          let convertedTemplates: Template[] = [];
+          if (Array.isArray(templatesData) && templatesData.length > 0) {
+            console.log('🔄 テンプレートデータ変換開始:', templatesData.length, '件');
+            try {
+              convertedTemplates = templatesData.map((template, index) => {
+                console.log(`🔄 テンプレート変換 ${index + 1}/${templatesData.length}:`, template);
+                return convertBackendTemplate(template);
+              });
+              console.log('✅ テンプレートデータ変換完了:', convertedTemplates.length, '件');
+            } catch (conversionError) {
+              console.error('❌ テンプレート変換エラー:', conversionError);
+              convertedTemplates = [];
+            }
+          } else {
+            console.log('⚠️ テンプレートデータが空または無効:', templatesData);
+          }
+
+          console.log('📝 状態更新:', {
+            companiesCount: companiesResponse.items?.length || 0,
+            templatesCount: convertedTemplates.length,
+            convertedTemplates
+          });
+
           setState(prev => ({
             ...prev,
-            companies: companiesResponse.items,
-            templates: templatesData
+            companies: companiesResponse.items || [],
+            templates: convertedTemplates
           }))
+
+          console.log('✅ 初期データ取得・設定完了');
         }
       } catch (error) {
+        console.error('❌ 初期データ取得エラー:', {
+          error,
+          message: error instanceof Error ? error.message : 'Unknown error',
+          stack: error instanceof Error ? error.stack : undefined
+        });
+
         if (!ignore) {
+          let errorMessage = 'データの取得に失敗しました';
+          
+          if (error && typeof error === 'object' && 'message' in error) {
+            const errorMsg = (error as Error).message;
+            if (errorMsg.includes('401') || errorMsg.includes('認証')) {
+              errorMessage = '認証エラー：ログインし直してください';
+            } else if (errorMsg.includes('403') || errorMsg.includes('権限')) {
+              errorMessage = '権限エラー：テンプレートにアクセスする権限がありません';
+            } else if (errorMsg.includes('Network Error') || errorMsg.includes('fetch')) {
+              errorMessage = 'ネットワークエラー：サーバーに接続できません';
+            } else if (errorMsg.includes('テンプレート変換エラー')) {
+              errorMessage = 'テンプレートデータの処理中にエラーが発生しました';
+            } else {
+              errorMessage = `エラー: ${errorMsg}`;
+            }
+          }
+
           setState(prev => ({
             ...prev,
-            error: 'データの取得に失敗しました'
+            error: errorMessage,
+            companies: [],
+            templates: []
           }))
         }
       }
@@ -199,21 +348,23 @@ export function FormsPage() {
     }))
 
     try {
-      // TODO: 実際のAPIコール
-      const result = await submitForm(formId, templateId, templateData, dryRun)
+      // 実際のAPIコール
+      const result = dryRun 
+        ? await dryRunFormSubmission(parseInt(formId), parseInt(templateId), templateData)
+        : await actualFormSubmission(parseInt(formId), parseInt(templateId), templateData)
       
       setState(prev => ({
         ...prev,
         isSubmitting: false,
         submissionStatus: result.success ? 'success' : 'error',
-                  error: result.success ? null : (result.error || 'エラーが発生しました')
+        error: result.success ? null : (result.error || 'エラーが発生しました')
       }))
     } catch (error) {
       setState(prev => ({
         ...prev,
         isSubmitting: false,
         submissionStatus: 'error',
-        error: 'フォーム送信に失敗しました'
+        error: error instanceof Error ? error.message : 'フォーム送信に失敗しました'
       }))
     }
   }
@@ -351,75 +502,6 @@ export function FormsPage() {
   )
 }
 
-// モックAPI関数
-
-async function fetchTemplates(): Promise<Template[]> {
-  await new Promise(resolve => setTimeout(resolve, 300))
-  
-  return [
-    {
-      id: '1',
-      name: '営業問い合わせテンプレート',
-      category: '営業',
-      fields: [
-        { key: 'company_name', value: '{{company_name}}', type: 'variable' },
-        { key: 'contact_name', value: '営業担当者', type: 'static' },
-        { key: 'email', value: 'sales@example.com', type: 'static' },
-        { key: 'message', value: 'お世話になります。弊社サービスについてご案内させていただきたく、ご連絡いたしました。', type: 'static' }
-      ],
-      variables: [
-        { name: '企業名', key: 'company_name', defaultValue: '' }
-      ],
-      createdAt: new Date(),
-      updatedAt: new Date()
-    },
-    {
-      id: '2',
-      name: 'パートナーシップ提案テンプレート',
-      category: '提携',
-      fields: [
-        { key: 'company_name', value: '{{company_name}}', type: 'variable' },
-        { key: 'contact_name', value: 'ビジネス開発担当', type: 'static' },
-        { key: 'message', value: '貴社との協業について提案がございます。', type: 'static' }
-      ],
-      variables: [
-        { name: '企業名', key: 'company_name', defaultValue: '' }
-      ],
-      createdAt: new Date(),
-      updatedAt: new Date()
-    }
-  ]
-}
-
-
-async function submitForm(
-  formId: string, 
-  templateId: string, 
-  templateData: Record<string, string>, 
-  dryRun: boolean
-): Promise<{ success: boolean; error?: string; result?: any }> {
-  // シミュレート：送信に1-3秒かかる
-  await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 2000))
-  
-  // 30%の確率で失敗をシミュレート
-  if (!dryRun && Math.random() < 0.3) {
-    return {
-      success: false,
-      error: 'CAPTCHA認証が必要です。手動での確認をお願いします。'
-    }
-  }
-  
-  return {
-    success: true,
-    result: {
-      formId,
-      templateId,
-      submittedData: templateData,
-      dryRun,
-      submittedAt: new Date().toISOString()
-    }
-  }
-}
 
 // 現在未使用のためコメントアウト
 // async function checkTaskStatus(_taskId: string): Promise<{

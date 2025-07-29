@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     EMAIL_PASSWORD: str = ""
     
     # デバッグ設定
-    DEBUG: bool = False
+    DEBUG: bool = True  # 開発環境用に一時的に有効化
     
     class Config:
         env_file = ".env"

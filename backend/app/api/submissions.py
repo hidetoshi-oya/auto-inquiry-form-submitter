@@ -16,6 +16,7 @@ from app.schemas.submission import (
     SubmissionResponse,
     SubmissionListResponse,
     SubmissionBatchCreate,
+    SubmissionRequest,
     SubmissionStatus
 )
 from app.services.form_submitter import form_submitter
@@ -142,6 +143,47 @@ async def create_batch_submission(
         "template_id": request.template_id,
         "interval_seconds": request.interval_seconds,
         "test_mode": request.test_mode,
+        "task_id": task_result.task_id,
+        "status": "processing"
+    }
+
+
+@router.post("/single", response_model=dict)
+async def create_single_submission(
+    *,
+    db: Session = Depends(get_db),
+    request: SubmissionRequest,
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(deps.get_current_active_user),
+) -> Any:
+    """単一フォーム送信を実行"""
+    
+    # フォームの存在確認
+    form = db.query(Form).filter(Form.id == request.form_id).first()
+    if not form:
+        raise HTTPException(status_code=404, detail="Form not found")
+    
+    # テンプレートの存在確認
+    template = db.query(Template).filter(Template.id == request.template_id).first()
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+    
+    # Celeryタスクでフォーム送信を実行
+    task_result = submit_form_task.apply_async(
+        args=[
+            request.form_id,
+            request.template_id,
+            request.template_data,
+            request.take_screenshot,
+            request.dry_run
+        ]
+    )
+    
+    return {
+        "message": "Form submission started" if not request.dry_run else "Dry run started",
+        "form_id": request.form_id,
+        "template_id": request.template_id,
+        "dry_run": request.dry_run,
         "task_id": task_result.task_id,
         "status": "processing"
     }
