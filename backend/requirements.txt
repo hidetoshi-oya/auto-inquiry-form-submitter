@@ -1,7 +1,7 @@
 alembic==1.14.0
 annotated-types==0.7.0
 bcrypt==4.3.0
-boto3==1.39.14
+boto3==1.40.1
 celery==5.4.0
 email-validator==2.2.0
 fastapi==0.115.6
