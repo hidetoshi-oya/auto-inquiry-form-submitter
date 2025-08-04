@@ -2,7 +2,7 @@ alembic==1.14.0
 annotated-types==0.7.0
 bcrypt==4.3.0
 boto3==1.39.14
-celery==5.4.0
+celery==5.5.3
 email-validator==2.2.0
 fastapi==0.115.6
 httpx==0.28.1
