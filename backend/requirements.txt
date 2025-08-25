@@ -31,4 +31,4 @@ beautifulsoup4==4.13.4
 lxml==6.0.0
 croniter==6.0.0
 requests==2.32.3
-gunicorn==22.0.0
+gunicorn==23.0.0
